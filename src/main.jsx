@@ -505,6 +505,10 @@ function writeCrpFile(tabs) {
   return output;
 }
 
+function snapshotKey(data) {
+  return Array.from(data).join(",");
+}
+
 function importExcelFile(buffer) {
   const workbook = XLSX.read(buffer, { type: "array", cellStyles: true });
   const aliases = {
@@ -695,7 +699,7 @@ function App() {
   });
   const crpInputRef = useRef(null);
   const operationControllerRef = useRef(null);
-  const savedSnapshotRef = useRef(writeCrpFile(tabs));
+  const savedSnapshotRef = useRef(snapshotKey(writeCrpFile(tabs)));
   const loadedSnapshotRef = useRef(null);
   const snapshotInitializedRef = useRef(false);
   const current = tabs.find((tab) => tab.id === selectedId) || tabs[0];
@@ -705,7 +709,7 @@ function App() {
     }
   }, [settings.downloadDirectory]);
   useEffect(() => {
-    const snapshot = writeCrpFile(tabs);
+    const snapshot = snapshotKey(writeCrpFile(tabs));
     if (!snapshotInitializedRef.current) {
       savedSnapshotRef.current = snapshot;
       snapshotInitializedRef.current = true;
@@ -1212,7 +1216,7 @@ function App() {
         ? loadedTabs
         : [{ id: Date.now(), header: "New Tab", items: [] }];
       setTabs(nextTabs);
-      loadedSnapshotRef.current = writeCrpFile(nextTabs);
+      loadedSnapshotRef.current = snapshotKey(writeCrpFile(nextTabs));
       setSelectedId(nextTabs[0]?.id || null);
       log(`Imported file: ${file.name}`);
     } catch (error) {
@@ -1220,12 +1224,21 @@ function App() {
     }
     event.target.value = "";
   };
-  const saveReport = () => {
-    savedSnapshotRef.current = writeCrpFile(tabs);
-    setIsDirty(false);
-    const blob = new Blob([writeCrpFile(tabs)], {
-      type: "application/octet-stream",
-    });
+  const saveReport = async () => {
+    const data = writeCrpFile(tabs);
+    if (isTauri) {
+      try {
+        const path = await invoke("save_crp", { data: Array.from(data) });
+        if (!path) return;
+        savedSnapshotRef.current = snapshotKey(data);
+        setIsDirty(false);
+        log(`Saved current Code Report to ${path}.`);
+      } catch (error) {
+        log(`Save failed: ${error}`);
+      }
+      return;
+    }
+    const blob = new Blob([data], { type: "application/octet-stream" });
     const a = document.createElement("a");
     const objectUrl = URL.createObjectURL(blob);
     a.href = objectUrl;
@@ -1236,6 +1249,8 @@ function App() {
     a.click();
     a.remove();
     window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+    savedSnapshotRef.current = snapshotKey(data);
+    setIsDirty(false);
     log("Saved current Code Report.");
   };
   const cancelWork = () => {
@@ -1390,16 +1405,9 @@ function App() {
                 >
                   Open
                 </Button>
-                <SplitButton
-                  icon="save"
-                  onClick={saveReport}
-                  items={[
-                    { label: "Save", action: saveReport },
-                    { label: "Save As", icon: "saveAs", action: saveReport },
-                  ]}
-                >
+                <Button icon="save" onClick={saveReport}>
                   Save
-                </SplitButton>
+                </Button>
                 <Button icon="excel" disabled={busy}>
                   Export
                 </Button>

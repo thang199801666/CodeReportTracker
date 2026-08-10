@@ -58,10 +58,26 @@ fn open_folder(root: String, tab: String) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
+#[tauri::command]
+fn save_crp(app: tauri::AppHandle, data: Vec<u8>) -> Result<Option<String>, String> {
+    let Some(path) = app
+        .dialog()
+        .file()
+        .add_filter("Code Report", &["crp"])
+        .set_file_name("report.crp")
+        .blocking_save_file()
+    else {
+        return Ok(None);
+    };
+    let path = path.to_string();
+    fs::write(&path, data).map_err(|error| error.to_string())?;
+    Ok(Some(path))
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .invoke_handler(tauri::generate_handler![pick_directory, write_pdf, read_pdf, delete_pdfs, open_folder])
+        .invoke_handler(tauri::generate_handler![pick_directory, write_pdf, read_pdf, delete_pdfs, open_folder, save_crp])
         .run(tauri::generate_context!())
         .expect("error while running Code Report Tracker");
 }
