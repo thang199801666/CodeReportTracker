@@ -1,0 +1,1808 @@
+import React, { useEffect, useRef, useState } from "react";
+import { createRoot } from "react-dom/client";
+import { getDocument, GlobalWorkerOptions } from "pdfjs-dist";
+import * as XLSX from "xlsx";
+import workerSrc from "pdfjs-dist/build/pdf.worker.min.mjs?url";
+import "./styles.css";
+
+GlobalWorkerOptions.workerSrc = workerSrc;
+
+const sources = {
+  IAPMO: {
+    type: "ER",
+    link: "https://forms.iapmo.org/ues_reports/EvaluationReports.aspx",
+    pdfFolder: "https://forms.iapmo.org/ues_reports/reports/",
+  },
+  "ICC-ES": {
+    type: "ESR",
+    link: "https://icc-es.org/evaluation-report-program/reports-directory/",
+    pdfFolder: "https://cdn-v2.icc-es.org/wp-content/uploads/report-directory/",
+  },
+  "LADBS RR": {
+    type: "Other",
+    link: "https://www.drjcertification.org/ter-directory",
+    pdfFolder: "",
+  },
+};
+
+const defaultColumnWidths = [105, 130, 220, 100, 105, 105, 105, 135, 155];
+
+function Icon({ name }) {
+  const shapes = {
+    open: (
+      <>
+        <path d="M3 7.5h7l2 2h9v9.5H3z" />
+        <path d="M3 7.5V5h7l2 2" />
+      </>
+    ),
+    save: (
+      <>
+        <path d="M4 3h13l3 3v15H4z" />
+        <path d="M8 3v6h8V3M8 21v-7h8v7" />
+      </>
+    ),
+    saveAs: (
+      <>
+        <path d="M4 3h13l3 3v15H4z" />
+        <path d="M8 3v6h8V3M8 21v-7h8v7M17 14v5M14.5 16.5H19.5" />
+      </>
+    ),
+    excel: (
+      <>
+        <path d="M4 3h16v18H4z" />
+        <path d="m8 8 4 4-4 4M13.5 16H17" />
+        <path d="M7 3v18" />
+      </>
+    ),
+    checkLink: (
+      <>
+        <path d="M10 13a5 5 0 0 0 7.5.5l1.5-1.5a5 5 0 0 0-7-7l-.8.8" />
+        <path d="M14 11a5 5 0 0 0-7.5-.5L5 12a5 5 0 0 0 7 7l.8-.8" />
+        <path d="m8 12 2 2 4-4" />
+      </>
+    ),
+    refresh: (
+      <>
+        <path d="M20 11a8 8 0 0 0-14.8-4L3 9" />
+        <path d="M3 4v5h5M4 13a8 8 0 0 0 14.8 4L21 15" />
+        <path d="M21 20v-5h-5" />
+      </>
+    ),
+    download: (
+      <>
+        <path d="M12 3v12M7 11l5 5 5-5M4 20h16" />
+      </>
+    ),
+    stop: <path d="M6 6h12v12H6z" />,
+    trash: (
+      <>
+        <path d="M4 7h16M10 11v6M14 11v6M6 7l1 14h10l1-14M9 7V4h6v3" />
+      </>
+    ),
+    settings: (
+      <>
+        <circle cx="12" cy="12" r="3" />
+        <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-1.7 1.7-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.1h-2.4v-.1a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L8 17l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.6-1H6.7v-2.4h.1a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L8 8.6l1.7-1.7.1.1a1.7 1.7 0 0 0 1.9.3 1.7 1.7 0 0 0 1-1.6v-.1h2.4v.1a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1 1.7 1.7-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.1V14h-.1a1.7 1.7 0 0 0-1.6 1Z" />
+      </>
+    ),
+    help: (
+      <>
+        <circle cx="12" cy="12" r="9" />
+        <path d="M9.7 9a2.4 2.4 0 1 1 4 1.8c-1.1.8-1.7 1.2-1.7 2.7M12 17h.01" />
+      </>
+    ),
+    plus: (
+      <>
+        <path d="M12 5v14M5 12h14" />
+      </>
+    ),
+    rename: (
+      <>
+        <path d="m4 16-.8 4.8L8 20l11.5-11.5a2.1 2.1 0 0 0-3-3L5 17" />
+        <path d="m14.5 7.5 3 3" />
+      </>
+    ),
+    close: (
+      <>
+        <path d="m7 7 10 10M17 7 7 17" />
+      </>
+    ),
+    terminal: (
+      <>
+        <path d="m4 6 6 6-6 6M12 18h8" />
+      </>
+    ),
+  };
+  return (
+    <svg
+      className="icon"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.7"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      {shapes[name]}
+    </svg>
+  );
+}
+
+function parseCodeInfo(text) {
+  const code = text.match(/following[\s\S]{0,180}?(\d{4})/i)?.[1] || "n/a";
+  const issueMatches = [
+    ...text.matchAll(
+      /(?:issue|revised)[\s\S]{0,40}?((?:\d{1,2}[/-]){1,2}\d{2,4}|[A-Za-z]{3,9}\s+\d{4})/gi,
+    ),
+  ];
+  const valid = text.match(
+    /(?:renewal|valid|expiration|expires)[\s\S]{0,80}?((?:\d{1,2}[/-]){1,2}\d{2,4}|[A-Za-z]{3,9}\s+\d{4}|\d{4})/i,
+  )?.[1];
+  const monthYear = (value) => {
+    if (!value) return "n/a";
+    const date = new Date(value);
+    return Number.isNaN(date.getTime())
+      ? value
+      : date.toLocaleDateString("en-US", { month: "short", year: "numeric" });
+  };
+  return {
+    latest: code,
+    issue: monthYear(issueMatches.at(-1)?.[1]),
+    expiration: monthYear(valid),
+  };
+}
+
+async function readFirstPage(url, signal) {
+  const requestUrl = /^https?:\/\//i.test(url)
+    ? `/api/pdf-download?url=${encodeURIComponent(url)}`
+    : url;
+  const response = await fetch(requestUrl, { signal });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  const contentType =
+    response.headers.get("content-type") || "unknown content type";
+  const bytes = await response.arrayBuffer();
+  const signature = new TextDecoder().decode(new Uint8Array(bytes.slice(0, 5)));
+  if (signature !== "%PDF-")
+    throw new Error(`Response is not a PDF (${contentType}).`);
+  const blob = new Blob([bytes], { type: "application/pdf" });
+  const loadingTask = getDocument({ data: bytes });
+  loadingTask.onPassword = (callback) => callback("");
+  const pdf = await loadingTask.promise;
+  const page = await pdf.getPage(1);
+  const content = await page.getTextContent();
+  return { text: content.items.map((item) => item.str).join(" "), blob };
+}
+
+async function resolveEmbeddedPdf(url, signal) {
+  const response = await fetch(
+    `/api/pdf-resolve?url=${encodeURIComponent(url)}`,
+    { signal },
+  );
+  if (!response.ok) return null;
+  return (await response.json()).url || null;
+}
+
+async function headPdf(url, signal) {
+  const requestUrl = `/api/pdf-head?url=${encodeURIComponent(url)}`;
+  const response = await fetch(requestUrl, { signal });
+  if (!response.ok) return false;
+  const contentType = response.headers.get("content-type")?.toLowerCase() || "";
+  return (
+    contentType.includes("application/pdf") ||
+    new URL(url).pathname.toLowerCase().endsWith(".pdf")
+  );
+}
+
+function parseCodeNumber(value) {
+  const trimmed = value.trim();
+  const match = trimmed.match(/^([A-Za-z]+)[\s-]*0*(\d+)$/);
+  if (match) return { prefix: match[1], numeric: match[2] };
+  const parts = trimmed.split(/[\s-]+/).filter(Boolean);
+  if (parts.length >= 2 && /^[A-Za-z]+$/.test(parts[0]))
+    return {
+      prefix: parts[0],
+      numeric: parts.slice(1).join("").replace(/^0+/, "") || parts.at(-1),
+    };
+  return { prefix: "", numeric: "" };
+}
+
+function buildPdfCandidates(number, source) {
+  const { prefix, numeric } = parseCodeNumber(number);
+  const setting =
+    Object.values(sources).find(
+      (item) => item.type.toLowerCase() === prefix.toLowerCase(),
+    ) ||
+    Object.values(sources).find((item) =>
+      number.toLowerCase().includes(item.type.toLowerCase()),
+    );
+  if (!setting) return { setting: null, candidates: [] };
+  const cleaned = number.replace(/[\s-]+/g, "");
+  const stems = [
+    ...new Set(
+      [
+        number.trim(),
+        `${prefix}-${numeric}`,
+        cleaned,
+        numeric,
+        numeric.length === 3 ? `0${numeric}` : "",
+      ].filter(Boolean),
+    ),
+  ];
+  const bases = [setting.link, setting.pdfFolder].filter(Boolean);
+  const candidates = bases.flatMap((base) =>
+    stems.map((stem) => `${base.replace(/\/$/, "")}/${stem}.pdf`),
+  );
+  if (
+    (source?.link || "").toLowerCase().includes("icc-es.org") ||
+    setting.type.toUpperCase() === "ESR"
+  )
+    candidates.push(
+      `https://icc-es.org/wp-content/uploads/report-directory/${encodeURIComponent(number)}.pdf`,
+    );
+  return { setting, candidates: [...new Set(candidates)] };
+}
+
+async function checkCodeLink(row, signal) {
+  if (
+    row.link &&
+    /^https?:\/\//i.test(row.link) &&
+    (await headPdf(row.link, signal))
+  )
+    return { exists: true, link: row.link };
+  const { candidates } = buildPdfCandidates(row.number || "", row);
+  const checkedCandidates = await Promise.all(
+    candidates.map(async (candidate) => {
+      try {
+        return (await headPdf(candidate, signal)) ? candidate : null;
+      } catch (error) {
+        if (error.name === "AbortError") throw error;
+        return null;
+      }
+    }),
+  );
+  const foundCandidate = checkedCandidates.find(Boolean);
+  if (foundCandidate) return { exists: true, link: foundCandidate };
+  return { exists: false, link: row.link };
+}
+
+async function readCodeFirstPage(row, signal) {
+  try {
+    return { ...(await readFirstPage(row.link, signal)), sourceUrl: row.link };
+  } catch (error) {
+    if (!String(error?.message || "").startsWith("Response is not a PDF"))
+      throw error;
+    const embeddedUrl = await resolveEmbeddedPdf(row.link, signal);
+    if (embeddedUrl) {
+      try {
+        return {
+          ...(await readFirstPage(embeddedUrl, signal)),
+          sourceUrl: embeddedUrl,
+        };
+      } catch (embeddedError) {
+        if (embeddedError.name === "AbortError") throw embeddedError;
+      }
+    }
+    const { candidates } = buildPdfCandidates(row.number || "", row);
+    let lastCandidateError = error;
+    const readableCandidates = await Promise.all(
+      candidates.map(async (candidate) => {
+        try {
+          return (await headPdf(candidate, signal)) ? candidate : null;
+        } catch (candidateError) {
+          if (candidateError.name === "AbortError") throw candidateError;
+          return null;
+        }
+      }),
+    );
+    for (const candidate of readableCandidates.filter(Boolean)) {
+      try {
+        return {
+          ...(await readFirstPage(candidate, signal)),
+          sourceUrl: candidate,
+        };
+      } catch (candidateError) {
+        if (candidateError.name === "AbortError") throw candidateError;
+        lastCandidateError = candidateError;
+      }
+    }
+    throw lastCandidateError;
+  }
+}
+
+function formatOperationError(error) {
+  if (error?.name === "TypeError" || error?.message === "Failed to fetch")
+    return "Failed to fetch. Check the URL, network access, or CORS settings.";
+  return error?.message || "Unknown operation error.";
+}
+
+function safeDirectoryName(value) {
+  return (
+    String(value || "New Tab")
+      .replace(/[<>:"/\\|?*]/g, "_")
+      .trim() || "New Tab"
+  );
+}
+
+async function runConcurrent(count, worker, signal, concurrency = 4) {
+  const workerCount = Math.min(concurrency, count);
+  const assignments = Array.from({ length: workerCount }, (_, workerIndex) =>
+    Array.from({ length: count }, (_, index) => index).filter(
+      (index) => index % workerCount === workerIndex,
+    ),
+  );
+  await Promise.all(
+    assignments.map(async (indexes, workerIndex) => {
+      for (const index of indexes) {
+        if (signal.aborted) return;
+        await worker(index, workerIndex);
+      }
+    }),
+  );
+}
+
+function readCrpFile(buffer) {
+  const view = new DataView(buffer);
+  const decoder = new TextDecoder("utf-8");
+  let offset = 0;
+  const readInt = () => {
+    if (offset + 4 > view.byteLength)
+      throw new Error("Unexpected end of CRP file.");
+    const value = view.getInt32(offset, true);
+    offset += 4;
+    return value;
+  };
+  const readByte = () => {
+    if (offset >= view.byteLength)
+      throw new Error("Unexpected end of CRP file.");
+    return view.getUint8(offset++);
+  };
+  const readString = () => {
+    const length = readInt();
+    if (length < 0) return "";
+    if (offset + length > view.byteLength)
+      throw new Error("Invalid CRP string length.");
+    const value = decoder.decode(new Uint8Array(buffer, offset, length));
+    offset += length;
+    return value;
+  };
+  const magic = decoder.decode(
+    new Uint8Array(buffer, 0, Math.min(4, view.byteLength)),
+  );
+  if (magic !== "CRPB")
+    throw new Error("This file is not a valid Code Report file.");
+  offset = 4;
+  const version = readByte();
+  if (version !== 1 && version !== 2)
+    throw new Error(`Unsupported CRP version: ${version}`);
+  const tabs = [];
+  const tabCount = readInt();
+  if (tabCount < 0 || tabCount > 1000)
+    throw new Error("Invalid tab count in CRP file.");
+  for (let tabIndex = 0; tabIndex < tabCount; tabIndex += 1) {
+    const header = readString() || "New Tab";
+    const itemCount = readInt();
+    if (itemCount < 0 || itemCount > 100000)
+      throw new Error("Invalid item count in CRP file.");
+    const items = [];
+    for (let itemIndex = 0; itemIndex < itemCount; itemIndex += 1) {
+      const [
+        number,
+        link,
+        webType,
+        category,
+        description,
+        products,
+        latest,
+        oldLatest,
+        issue,
+        oldIssue,
+        expiration,
+        oldExpiration,
+      ] = Array.from({ length: 12 }, readString);
+      const progress = readInt();
+      const lastCheck = readString();
+      // Check results are session state and must not be restored from CRP files.
+      readByte();
+      readByte();
+      const exists = version === 2 ? readByte() !== 0 : false;
+      items.push({
+        number,
+        link,
+        webType,
+        category,
+        description,
+        products,
+        latest,
+        oldLatest,
+        issue,
+        oldIssue,
+        expiration,
+        oldExpiration,
+        progress,
+        lastCheck,
+        checked: false,
+        updated: false,
+        exists,
+      });
+    }
+    tabs.push({ id: Date.now() + tabIndex, header, items });
+  }
+  return tabs;
+}
+
+function writeCrpFile(tabs) {
+  const encoder = new TextEncoder();
+  const chunks = [new TextEncoder().encode("CRPB"), Uint8Array.of(2)];
+  const appendInt = (value) => {
+    const bytes = new Uint8Array(4);
+    new DataView(bytes.buffer).setInt32(0, value, true);
+    chunks.push(bytes);
+  };
+  const appendByte = (value) => chunks.push(Uint8Array.of(value ? 1 : 0));
+  const appendString = (value) => {
+    const bytes = value == null ? null : encoder.encode(String(value));
+    appendInt(bytes ? bytes.length : -1);
+    if (bytes) chunks.push(bytes);
+  };
+  appendInt(tabs.length);
+  tabs.forEach((tab) => {
+    appendString(tab.header);
+    appendInt(tab.items.length);
+    tab.items.forEach((row) => {
+      [
+        row.number,
+        row.link,
+        row.webType,
+        row.category,
+        row.description,
+        row.products,
+        row.latest,
+        row.oldLatest,
+        row.issue,
+        row.oldIssue,
+        row.expiration,
+        row.oldExpiration,
+      ].forEach(appendString);
+      appendInt(0);
+      appendString(row.lastCheck);
+      appendByte(false);
+      appendByte(false);
+      appendByte(row.exists);
+    });
+  });
+  const output = new Uint8Array(
+    chunks.reduce((size, chunk) => size + chunk.length, 0),
+  );
+  let position = 0;
+  chunks.forEach((chunk) => {
+    output.set(chunk, position);
+    position += chunk.length;
+  });
+  return output;
+}
+
+function importExcelFile(buffer) {
+  const workbook = XLSX.read(buffer, { type: "array", cellStyles: true });
+  const aliases = {
+    number: ["code report no", "code report number", "number"],
+    link: ["link", "url", "report link"],
+    webType: ["web type", "type"],
+    category: ["product category"],
+    description: ["description"],
+    products: ["products listed"],
+    latest: ["latest code"],
+    issue: ["issue/rev date", "issue date", "rev date"],
+    expiration: ["expiration date", "expiration"],
+    progress: ["download process", "download progress"],
+    status: ["status"],
+  };
+  const normalize = (value) =>
+    String(value ?? "")
+      .trim()
+      .toLowerCase()
+      .replace(/[\s_]+/g, " ");
+  const findHeader = (headers, names) =>
+    headers.findIndex((header) => names.includes(normalize(header)));
+  const readCell = (sheet, row, column) => {
+    if (column < 0) return { text: "", link: "" };
+    const cell = sheet[XLSX.utils.encode_cell({ r: row, c: column })];
+    return { text: cell?.w ?? cell?.v ?? "", link: cell?.l?.Target ?? "" };
+  };
+  return workbook.SheetNames.map((sheetName, sheetIndex) => {
+    const sheet = workbook.Sheets[sheetName];
+    const range = XLSX.utils.decode_range(sheet["!ref"] || "A1");
+    const headers = [];
+    for (let column = range.s.c; column <= range.e.c; column += 1)
+      headers.push(readCell(sheet, range.s.r, column).text);
+    const indexes = Object.fromEntries(
+      Object.entries(aliases).map(([field, names]) => [
+        field,
+        findHeader(headers, names),
+      ]),
+    );
+    const items = [];
+    for (let row = range.s.r + 1; row <= range.e.r; row += 1) {
+      const values = Object.fromEntries(
+        Object.entries(indexes).map(([field, column]) => [
+          field,
+          readCell(sheet, row, column),
+        ]),
+      );
+      const text = (field) => String(values[field]?.text ?? "").trim();
+      if (
+        !Object.values(values).some((value) => value.text !== "" || value.link)
+      )
+        continue;
+      const status = text("status").toLowerCase();
+      items.push({
+        number: text("number"),
+        link: values.number.link || text("link"),
+        webType: text("webType"),
+        category: text("category"),
+        description: text("description"),
+        products: text("products"),
+        latest: text("latest"),
+        oldLatest: "",
+        issue: text("issue"),
+        oldIssue: "",
+        expiration: text("expiration"),
+        oldExpiration: "",
+        progress: Number.parseInt(text("progress"), 10) || 0,
+        lastCheck: "",
+        checked: status.includes("check") || status.includes("true"),
+        updated: status.includes("update"),
+        exists: true,
+      });
+    }
+    return {
+      id: Date.now() + sheetIndex,
+      header: sheetName || "New Tab",
+      items,
+    };
+  });
+}
+
+function Button({ icon, children, onClick, disabled, split }) {
+  return (
+    <button
+      className={`ribbon-button icon-${icon}`}
+      onClick={onClick}
+      disabled={disabled}
+    >
+      <Icon name={icon} />
+      <span>{children}</span>
+      {split && <b className="split-arrow">⌄</b>}
+    </button>
+  );
+}
+
+function SplitButton({ icon, children, onClick, disabled, items }) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef(null);
+  useEffect(() => {
+    if (!open) return undefined;
+    const closeWhenOutside = (event) => {
+      if (!rootRef.current?.contains(event.target)) setOpen(false);
+    };
+    document.addEventListener("pointerdown", closeWhenOutside);
+    return () => document.removeEventListener("pointerdown", closeWhenOutside);
+  }, [open]);
+  const choose = (action) => {
+    setOpen(false);
+    action?.();
+  };
+  return (
+    <div className={`split-button-wrap icon-${icon}`} ref={rootRef}>
+      <button
+        className="ribbon-button split-main"
+        onClick={onClick}
+        disabled={disabled}
+      >
+        <Icon name={icon} />
+        <span>{children}</span>
+      </button>
+      <button
+        className="split-toggle"
+        onClick={() => setOpen((value) => !value)}
+        disabled={disabled}
+        aria-label={`${children} menu`}
+      >
+        ⌄
+      </button>
+      {open && (
+        <div className="split-menu">
+          {items.map((item) => (
+            <button key={item.label} onClick={() => choose(item.action)}>
+              <Icon name={item.icon || icon} />
+              <span>{item.label}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function App() {
+  const [tabs, setTabs] = useState([{ id: 1, header: "New Tab", items: [] }]);
+  const [selectedId, setSelectedId] = useState(1);
+  const [busy, setBusy] = useState(false);
+  const [consoleText, setConsoleText] = useState(
+    "**************Initialize**************\n",
+  );
+  const [showSettings, setShowSettings] = useState(false);
+  const [activeRibbonTab, setActiveRibbonTab] = useState("Home");
+  const [editingTabId, setEditingTabId] = useState(null);
+  const [draggedTabId, setDraggedTabId] = useState(null);
+  const [dragOverTabId, setDragOverTabId] = useState(null);
+  const [dragPreview, setDragPreview] = useState(null);
+  const [selectedRows, setSelectedRows] = useState(new Set());
+  const [lastSelectedRow, setLastSelectedRow] = useState(null);
+  const [columnWidths, setColumnWidths] = useState(defaultColumnWidths);
+  const [columnResize, setColumnResize] = useState(null);
+  const [draftRow, setDraftRow] = useState({
+    number: "",
+    link: "",
+    category: "",
+    description: "",
+    products: "",
+    latest: "",
+    issue: "",
+    expiration: "",
+    checked: false,
+    updated: false,
+  });
+  const [contextMenu, setContextMenu] = useState(null);
+  const [isDirty, setIsDirty] = useState(false);
+  const [consoleHeight, setConsoleHeight] = useState(142);
+  const [resizingConsole, setResizingConsole] = useState(false);
+  const downloadDirectoryRef = useRef(null);
+  const [settings, setSettings] = useState(() => {
+    try {
+      return {
+        workerCount: 4,
+        downloadDirectory: "Downloads",
+        ...JSON.parse(localStorage.getItem("code-report-settings") || "{}"),
+      };
+    } catch {
+      return { workerCount: 4, downloadDirectory: "Downloads" };
+    }
+  });
+  const crpInputRef = useRef(null);
+  const operationControllerRef = useRef(null);
+  const savedSnapshotRef = useRef(writeCrpFile(tabs));
+  const loadedSnapshotRef = useRef(null);
+  const current = tabs.find((tab) => tab.id === selectedId) || tabs[0];
+  useEffect(() => {
+    const snapshot = writeCrpFile(tabs);
+    if (loadedSnapshotRef.current !== null) {
+      savedSnapshotRef.current = loadedSnapshotRef.current;
+      loadedSnapshotRef.current = null;
+      setIsDirty(false);
+      return;
+    }
+    setIsDirty(snapshot !== savedSnapshotRef.current);
+  }, [tabs]);
+  useEffect(() => {
+    const warnBeforeClose = (event) => {
+      if (!isDirty) return;
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", warnBeforeClose);
+    return () => window.removeEventListener("beforeunload", warnBeforeClose);
+  }, [isDirty]);
+  useEffect(() => {
+    const showContextMenu = (event) => {
+      if (event.defaultPrevented) return;
+      event.preventDefault();
+      setContextMenu({ x: event.clientX, y: event.clientY });
+    };
+    const closeContextMenu = () => setContextMenu(null);
+    document.addEventListener("contextmenu", showContextMenu);
+    document.addEventListener("click", closeContextMenu);
+    document.addEventListener("scroll", closeContextMenu, true);
+    return () => {
+      document.removeEventListener("contextmenu", showContextMenu);
+      document.removeEventListener("click", closeContextMenu);
+      document.removeEventListener("scroll", closeContextMenu, true);
+    };
+  }, []);
+  const log = (text) =>
+    setConsoleText(
+      (value) => `${value}-[${new Date().toLocaleTimeString()}] : ${text}\n`,
+    );
+  const updateRow = (index, patch) =>
+    setTabs((all) =>
+      all.map((tab) =>
+        tab.id === selectedId
+          ? {
+              ...tab,
+              items: tab.items.map((row, i) =>
+                i === index ? { ...row, ...patch } : row,
+              ),
+            }
+          : tab,
+      ),
+    );
+  const selectTab = (id) => {
+    setSelectedId(id);
+    setSelectedRows(new Set());
+    setLastSelectedRow(null);
+  };
+  const addTab = () => {
+    const id = Date.now();
+    setTabs((all) => [...all, { id, header: "New Tab", items: [] }]);
+    selectTab(id);
+    log("Created new tab.");
+  };
+  const closeTab = (id) => {
+    const tab = tabs.find((item) => item.id === id);
+    if (
+      !window.confirm(
+        `Delete tab '${tab?.header || "New Tab"}'? All rows in this tab will be removed.`,
+      )
+    )
+      return;
+    const next = tabs.filter((tab) => tab.id !== id);
+    if (!next.length) {
+      const replacement = { id: Date.now(), header: "New Tab", items: [] };
+      setTabs([replacement]);
+      setSelectedId(replacement.id);
+      return;
+    }
+    setTabs(next);
+    if (id === selectedId) setSelectedId(next[0].id);
+  };
+  const renameTab = (id, header) => {
+    const nextHeader = header.trim() || "New Tab";
+    setTabs((all) =>
+      all.map((tab) => (tab.id === id ? { ...tab, header: nextHeader } : tab)),
+    );
+    setEditingTabId(null);
+  };
+  const reorderTabs = (targetId) => {
+    if (draggedTabId == null || draggedTabId === targetId) return;
+    setTabs((all) => {
+      const fromIndex = all.findIndex((tab) => tab.id === draggedTabId);
+      const targetIndex = all.findIndex((tab) => tab.id === targetId);
+      if (fromIndex < 0 || targetIndex < 0) return all;
+      const next = [...all];
+      const [moved] = next.splice(fromIndex, 1);
+      next.splice(targetIndex, 0, moved);
+      return next;
+    });
+    setDraggedTabId(null);
+    setDragOverTabId(null);
+    setDragPreview(null);
+  };
+  const startTabDrag = (event, tab) => {
+    setDraggedTabId(tab.id);
+    setDragPreview({ header: tab.header, x: event.clientX, y: event.clientY });
+    event.dataTransfer.effectAllowed = "move";
+  };
+  const moveTabDrag = (event) =>
+    setDragPreview((preview) =>
+      preview ? { ...preview, x: event.clientX, y: event.clientY } : preview,
+    );
+  const endTabDrag = () => {
+    setDraggedTabId(null);
+    setDragOverTabId(null);
+    setDragPreview(null);
+  };
+  const updateDraftRow = (field, value) =>
+    setDraftRow((row) => ({ ...row, [field]: value }));
+  const commitDraftRow = () => {
+    setTabs((all) =>
+      all.map((tab) =>
+        tab.id === selectedId
+          ? {
+              ...tab,
+              items: [
+                ...tab.items,
+                {
+                  ...draftRow,
+                  oldLatest: "",
+                  oldIssue: "",
+                  oldExpiration: "",
+                  progress: 0,
+                  checked: false,
+                  updated: false,
+                  exists: true,
+                },
+              ],
+            }
+          : tab,
+      ),
+    );
+    setDraftRow({
+      number: "",
+      link: "",
+      category: "",
+      description: "",
+      products: "",
+      latest: "",
+      issue: "",
+      expiration: "",
+      checked: false,
+      updated: false,
+    });
+  };
+  const selectRow = (index, event) => {
+    const next = new Set(selectedRows);
+    if (event.shiftKey && lastSelectedRow !== null) {
+      const start = Math.min(lastSelectedRow, index);
+      const end = Math.max(lastSelectedRow, index);
+      for (let rowIndex = start; rowIndex <= end; rowIndex += 1)
+        next.add(rowIndex);
+    } else if (event.ctrlKey || event.metaKey) {
+      if (next.has(index)) next.delete(index);
+      else next.add(index);
+      setLastSelectedRow(index);
+    } else {
+      next.clear();
+      next.add(index);
+      setLastSelectedRow(index);
+    }
+    setSelectedRows(next);
+  };
+  const showRowContextMenu = (event, index) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!selectedRows.has(index)) {
+      setSelectedRows(new Set([index]));
+      setLastSelectedRow(index);
+    }
+    setContextMenu({ x: event.clientX, y: event.clientY, row: true });
+  };
+  const showTabContextMenu = (event, tabId) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setContextMenu({ x: event.clientX, y: event.clientY, tabId });
+  };
+  const deleteSelectedRows = () => {
+    const count = selectedRows.size;
+    if (!count) return;
+    setTabs((all) =>
+      all.map((tab) =>
+        tab.id === selectedId
+          ? {
+              ...tab,
+              items: tab.items.filter((_, index) => !selectedRows.has(index)),
+            }
+          : tab,
+      ),
+    );
+    setSelectedRows(new Set());
+    setLastSelectedRow(null);
+    setContextMenu(null);
+    log(`Deleted ${count} selected row(s).`);
+  };
+  const runCheck = async (mode = "update") => {
+    if (!current.items.length) {
+      log(`${mode} aborted: no rows to process.`);
+      return;
+    }
+    setBusy(true);
+    const controller = new AbortController();
+    operationControllerRef.current = controller;
+    log(
+      mode === "check"
+        ? "Check Link started: checking PDF existence..."
+        : "Search started: reading first page of PDFs with 4 workers...",
+    );
+    await runConcurrent(
+      current.items.length,
+      async (i) => {
+        const row = current.items[i];
+        if (controller.signal.aborted) return;
+        if (mode !== "check" && !row.link) {
+          log(`${row.number || "(unnamed)"} skipped: no link.`);
+          return;
+        }
+        try {
+          if (mode === "check") {
+            const result = await checkCodeLink(row, controller.signal);
+            updateRow(i, {
+              checked: true,
+              exists: result.exists,
+              link: result.link,
+            });
+            log(
+              `Checked ${row.number || "(unnamed)"}: PDF ${result.exists ? "found" : "missing"}`,
+            );
+          } else {
+            const { text, sourceUrl } = await readCodeFirstPage(
+              row,
+              controller.signal,
+            );
+            const info = parseCodeInfo(text);
+            updateRow(i, {
+              oldLatest: row.latest,
+              oldIssue: row.issue,
+              oldExpiration: row.expiration,
+              link: sourceUrl,
+              ...info,
+              checked: true,
+              updated:
+                info.latest !== row.latest ||
+                info.issue !== row.issue ||
+                info.expiration !== row.expiration,
+            });
+            log(`${row.number || "PDF"}: completed.`);
+          }
+        } catch (error) {
+          if (controller.signal.aborted || error.name === "AbortError") return;
+          if (mode !== "check") updateRow(i, { checked: false, exists: false });
+          log(`${row.number || "PDF"} failed: ${formatOperationError(error)}`);
+        }
+      },
+      controller.signal,
+      Math.max(1, Math.min(16, Number(settings.workerCount) || 4)),
+    );
+    log(
+      controller.signal.aborted
+        ? "Operation cancelled."
+        : `${mode === "check" ? "Check Link" : "Search"} finished.`,
+    );
+    operationControllerRef.current = null;
+    setBusy(false);
+  };
+  const downloadPdfs = async () => {
+    if (!downloadDirectoryRef.current && window.showDirectoryPicker) {
+      try {
+        downloadDirectoryRef.current = await window.showDirectoryPicker({
+          mode: "readwrite",
+        });
+      } catch (error) {
+        if (error.name !== "AbortError")
+          log(`Download folder selection failed: ${error.message}`);
+        return;
+      }
+    }
+    setBusy(true);
+    const controller = new AbortController();
+    operationControllerRef.current = controller;
+    log("Download started: saving PDFs from selected tab.");
+    await runConcurrent(
+      current.items.length,
+      async (i) => {
+        const row = current.items[i];
+        if (controller.signal.aborted || !row.link) return;
+        try {
+          const { blob } = await readCodeFirstPage(row, controller.signal);
+          const fileName = `${row.number || "report"}.pdf`;
+          const rootDirectory = downloadDirectoryRef.current;
+          if (rootDirectory?.getFileHandle) {
+            const permission = await rootDirectory.queryPermission({
+              mode: "readwrite",
+            });
+            if (permission !== "granted")
+              await rootDirectory.requestPermission({ mode: "readwrite" });
+            const directory = await rootDirectory.getDirectoryHandle(
+              safeDirectoryName(current.header),
+              { create: true },
+            );
+            const fileHandle = await directory.getFileHandle(fileName, {
+              create: true,
+            });
+            const writable = await fileHandle.createWritable();
+            await writable.write(blob);
+            await writable.close();
+          } else {
+            const a = document.createElement("a");
+            const objectUrl = URL.createObjectURL(blob);
+            a.href = objectUrl;
+            a.download = fileName;
+            a.target = "_self";
+            a.style.display = "none";
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+          }
+          updateRow(i, { progress: 100 });
+          log(`${row.number || "PDF"} downloaded.`);
+        } catch (error) {
+          if (controller.signal.aborted || error.name === "AbortError") return;
+          log(
+            `${row.number || "PDF"} download failed: ${formatOperationError(error)}`,
+          );
+        }
+      },
+      controller.signal,
+      Math.max(1, Math.min(16, Number(settings.workerCount) || 4)),
+    );
+    operationControllerRef.current = null;
+    setBusy(false);
+    log(
+      controller.signal.aborted ? "Download cancelled." : "Download finished.",
+    );
+  };
+  const deletePdfs = async (tabId = selectedId) => {
+    const targetTab = tabs.find((tab) => tab.id === tabId) || current;
+    if (!targetTab) return;
+    if (!window.showDirectoryPicker && !downloadDirectoryRef.current) {
+      log(
+        "Delete PDFs unavailable: folder access is not supported by this browser.",
+      );
+      return;
+    }
+    if (!downloadDirectoryRef.current) {
+      try {
+        downloadDirectoryRef.current = await window.showDirectoryPicker({
+          mode: "readwrite",
+        });
+      } catch (error) {
+        if (error.name !== "AbortError")
+          log(`Delete PDFs folder selection failed: ${error.message}`);
+        return;
+      }
+    }
+    if (
+      !window.confirm(
+        `Delete all PDF files from the '${targetTab.header}' folder? This action cannot be undone.`,
+      )
+    )
+      return;
+    setBusy(true);
+    try {
+      const rootDirectory = downloadDirectoryRef.current;
+      const permission = await rootDirectory.queryPermission({
+        mode: "readwrite",
+      });
+      if (permission !== "granted")
+        await rootDirectory.requestPermission({ mode: "readwrite" });
+      const directory = await rootDirectory.getDirectoryHandle(
+        safeDirectoryName(targetTab.header),
+        { create: false },
+      );
+      let deleted = 0;
+      for await (const [name] of directory.entries()) {
+        if (name.toLowerCase().endsWith(".pdf")) {
+          await directory.removeEntry(name);
+          deleted += 1;
+        }
+      }
+      log(`Deleted ${deleted} PDF file(s) from '${targetTab.header}'.`);
+    } catch (error) {
+      log(`Delete PDFs failed: ${formatOperationError(error)}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const openDataFile = async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    try {
+      const buffer = await file.arrayBuffer();
+      const loadedTabs = file.name.toLowerCase().endsWith(".crp")
+        ? readCrpFile(buffer)
+        : importExcelFile(buffer);
+      const nextTabs = loadedTabs.length
+        ? loadedTabs
+        : [{ id: Date.now(), header: "New Tab", items: [] }];
+      setTabs(nextTabs);
+      loadedSnapshotRef.current = writeCrpFile(nextTabs);
+      setSelectedId(nextTabs[0]?.id || null);
+      log(`Imported file: ${file.name}`);
+    } catch (error) {
+      log(`Failed to load CRP file: ${error.message}`);
+    }
+    event.target.value = "";
+  };
+  const saveReport = () => {
+    savedSnapshotRef.current = writeCrpFile(tabs);
+    setIsDirty(false);
+    const blob = new Blob([writeCrpFile(tabs)], {
+      type: "application/octet-stream",
+    });
+    const a = document.createElement("a");
+    const objectUrl = URL.createObjectURL(blob);
+    a.href = objectUrl;
+    a.download = "report.crp";
+    a.target = "_self";
+    a.style.display = "none";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+    log("Saved current Code Report.");
+  };
+  const cancelWork = () => {
+    if (operationControllerRef.current) {
+      operationControllerRef.current.abort();
+      return;
+    }
+    setBusy(false);
+    log("Cancel");
+  };
+  const saveSettings = (nextSettings) => {
+    const normalized = {
+      workerCount: Math.max(
+        1,
+        Math.min(16, Number(nextSettings.workerCount) || 4),
+      ),
+      downloadDirectory: nextSettings.downloadDirectory || "Downloads",
+    };
+    setSettings(normalized);
+    localStorage.setItem("code-report-settings", JSON.stringify(normalized));
+  };
+  const setDownloadDirectory = (handle) => {
+    downloadDirectoryRef.current = handle;
+  };
+  const closeTabFromButton = (event, id) => {
+    event.stopPropagation();
+    closeTab(id);
+  };
+  const startConsoleResize = (event) => {
+    event.preventDefault();
+    setResizingConsole(true);
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+  const resizeConsole = (event) => {
+    if (!resizingConsole) return;
+    const nextHeight = window.innerHeight - event.clientY - 25;
+    setConsoleHeight(
+      Math.min(Math.max(nextHeight, 86), Math.floor(window.innerHeight * 0.65)),
+    );
+  };
+  const stopConsoleResize = () => setResizingConsole(false);
+  const startColumnResize = (event, index) => {
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    const neighborIndex =
+      index === columnWidths.length - 1 ? index - 1 : index + 1;
+    setColumnResize({
+      index,
+      neighborIndex,
+      startX: event.clientX,
+      startWidth: columnWidths[index],
+      neighborWidth: columnWidths[neighborIndex],
+    });
+  };
+  const moveColumnResize = (event) => {
+    if (!columnResize) return;
+    const delta = event.clientX - columnResize.startX;
+    const nextWidth = Math.max(
+      55,
+      Math.min(
+        columnResize.startWidth + delta,
+        columnResize.startWidth + columnResize.neighborWidth - 55,
+      ),
+    );
+    const appliedDelta = nextWidth - columnResize.startWidth;
+    setColumnWidths((widths) =>
+      widths.map((width, index) =>
+        index === columnResize.index
+          ? nextWidth
+          : index === columnResize.neighborIndex
+            ? columnResize.neighborWidth - appliedDelta
+            : width,
+      ),
+    );
+  };
+  const stopColumnResize = () => setColumnResize(null);
+
+  const tableRows = current.items.length ? (
+    current.items.map((row, index) => (
+      <ReportRow
+        key={`${row.number}-${index}`}
+        row={row}
+        index={index}
+        selected={selectedRows.has(index)}
+        update={(patch) => updateRow(index, patch)}
+        onSelect={(event) => selectRow(index, event)}
+        onContextMenu={(event) => showRowContextMenu(event, index)}
+      />
+    ))
+  ) : (
+    <tr>
+      <td colSpan={9} className="empty-table">
+        No rows yet. Use the plus button below to add a report.
+      </td>
+    </tr>
+  );
+
+  const headers = [
+    "Code Report No",
+    "Product Category",
+    "Description",
+    "Products Listed",
+    "Latest Code",
+    "Issue/Rev Date",
+    "Expiration Date",
+    "Download Process",
+    "Status",
+  ];
+  const columnTotal = columnWidths.reduce((total, width) => total + width, 0);
+  const columnStyle = (index) => ({
+    width: `${((columnWidths[index] / columnTotal) * 100).toFixed(4)}%`,
+  });
+  return (
+    <div className="desktop-window">
+      <input
+        ref={crpInputRef}
+        className="hidden-file-input"
+        type="file"
+        accept=".crp,.xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
+        onChange={openDataFile}
+      />
+      <div className="titlebar">
+        <div className="app-title">
+          <span className="app-logo">CR</span>
+          <b>Code Report Tracker</b>
+        </div>
+        <span className="title-caption">PDF report management workspace</span>
+      </div>
+      <div className="ribbon-tabs">
+        <button
+          className={`ribbon-tab ${activeRibbonTab === "Home" ? "active" : ""}`}
+          onClick={() => setActiveRibbonTab("Home")}
+        >
+          Home
+        </button>
+        <button
+          className={`ribbon-tab ${activeRibbonTab === "Help" ? "active" : ""}`}
+          onClick={() => setActiveRibbonTab("Help")}
+        >
+          Help
+        </button>
+      </div>
+      <div className="ribbon-body">
+        <div className="ribbon-group">
+          <div className="ribbon-actions">
+            <Button icon="open" onClick={() => crpInputRef.current?.click()}>
+              Open
+            </Button>
+            <SplitButton
+              icon="save"
+              onClick={saveReport}
+              items={[
+                { label: "Save", action: saveReport },
+                { label: "Save As", icon: "saveAs", action: saveReport },
+              ]}
+            >
+              Save
+            </SplitButton>
+            <Button icon="excel" disabled={busy}>
+              Export
+            </Button>
+          </div>
+          <small>File</small>
+        </div>
+        <div className="ribbon-group">
+          <div className="ribbon-actions">
+            <Button
+              icon="checkLink"
+              onClick={() => runCheck("check")}
+              disabled={busy}
+            >
+              Check Link
+            </Button>
+            <SplitButton
+              icon="refresh"
+              onClick={() => runCheck("update")}
+              disabled={busy}
+              items={[
+                { label: "Update", action: () => runCheck("update") },
+                { label: "Update Local", action: () => runCheck("update") },
+              ]}
+            >
+              Update
+            </SplitButton>
+            <SplitButton
+              icon="download"
+              onClick={downloadPdfs}
+              disabled={busy}
+              items={[
+                { label: "Download PDFs", action: downloadPdfs },
+                {
+                  label: "Delete PDFs",
+                  icon: "trash",
+                  action: deletePdfs,
+                },
+              ]}
+            >
+              Download
+            </SplitButton>
+            <Button icon="stop" onClick={cancelWork} disabled={!busy}>
+              Stop
+            </Button>
+          </div>
+          <small>PDF Operations</small>
+        </div>
+        <div className="ribbon-group compact-group">
+          <div className="ribbon-actions">
+            <Button icon="settings" onClick={() => setShowSettings(true)}>
+              Settings
+            </Button>
+          </div>
+          <small>Settings</small>
+        </div>
+        <div className="ribbon-spacer" />
+        <span className="safe-state">
+          <i /> Local workspace
+        </span>
+      </div>
+      <main className="main-area">
+        <div className="tabbar">
+          {tabs.map((tab) => (
+            <div
+              className={`tab ${tab.id === selectedId ? "selected" : ""} ${draggedTabId === tab.id ? "dragging" : ""} ${dragOverTabId === tab.id ? "drag-over" : ""}`}
+              key={tab.id}
+              draggable
+              onDragStart={(event) => startTabDrag(event, tab)}
+              onDrag={(event) => moveTabDrag(event)}
+              onDragOver={(event) => {
+                event.preventDefault();
+                setDragOverTabId(tab.id);
+              }}
+              onDrop={() => reorderTabs(tab.id)}
+              onDragEnd={endTabDrag}
+              onClick={() => selectTab(tab.id)}
+              onDoubleClick={() => setEditingTabId(tab.id)}
+              onContextMenu={(event) => showTabContextMenu(event, tab.id)}
+            >
+              {editingTabId === tab.id ? (
+                <input
+                  className="tab-rename"
+                  autoFocus
+                  defaultValue={tab.header}
+                  onBlur={(event) => renameTab(tab.id, event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter")
+                      renameTab(tab.id, event.currentTarget.value);
+                    if (event.key === "Escape") setEditingTabId(null);
+                  }}
+                />
+              ) : (
+                <span>{tab.header}</span>
+              )}
+              <button
+                onClick={(event) => closeTabFromButton(event, tab.id)}
+                aria-label={`Close ${tab.header}`}
+              >
+                <Icon name="close" />
+              </button>
+            </div>
+          ))}
+          <button className="new-tab" onClick={addTab}>
+            <Icon name="plus" />
+          </button>
+        </div>
+        <div className="table-wrap">
+          <table style={{ width: "100%", minWidth: "0" }}>
+            <colgroup>
+              {columnWidths.map((_, index) => (
+                <col key={index} style={columnStyle(index)} />
+              ))}
+            </colgroup>
+            <thead>
+              <tr>
+                {headers.map((header, index) => (
+                  <th key={header} style={columnStyle(index)}>
+                    {header}
+                    <span
+                      className="column-grip"
+                      onPointerDown={(event) => startColumnResize(event, index)}
+                      onPointerMove={moveColumnResize}
+                      onPointerUp={stopColumnResize}
+                      onPointerCancel={stopColumnResize}
+                    />
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {tableRows}
+              <DraftRow
+                row={draftRow}
+                widths={columnWidths}
+                total={columnTotal}
+                update={updateDraftRow}
+                onCommit={commitDraftRow}
+              />
+            </tbody>
+          </table>
+        </div>
+      </main>
+      <div
+        className={`resize-handle ${resizingConsole ? "dragging" : ""}`}
+        onPointerDown={startConsoleResize}
+        onPointerMove={resizeConsole}
+        onPointerUp={stopConsoleResize}
+        onPointerCancel={stopConsoleResize}
+        role="separator"
+        aria-label="Resize Console"
+        aria-orientation="horizontal"
+      >
+        <span />
+      </div>
+      <section className="console" style={{ height: consoleHeight }}>
+        <div className="console-head">
+          <span>
+            <Icon name="terminal" /> Console
+          </span>
+          <span className="console-status">
+            {busy ? "Running..." : "Ready"} · Drag the bar above to resize
+          </span>
+        </div>
+        <textarea value={consoleText} readOnly />
+      </section>
+      <footer>
+        <span>Code Report Tracker</span>
+        <span>
+          {current.items.length} row(s) · {tabs.length} tab(s)
+        </span>
+      </footer>
+      {showSettings && (
+        <SettingsModal
+          settings={settings}
+          onSave={saveSettings}
+          onDirectorySelected={setDownloadDirectory}
+          onClose={() => setShowSettings(false)}
+        />
+      )}
+      {contextMenu && (
+        <div
+          className="context-menu"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+          onClick={(event) => event.stopPropagation()}
+        >
+          {contextMenu.tabId ? (
+            <>
+              <button
+                onClick={() => {
+                  setEditingTabId(contextMenu.tabId);
+                  setContextMenu(null);
+                }}
+              >
+                <Icon name="rename" /> Rename
+              </button>
+              <button
+                onClick={() => {
+                  const tabId = contextMenu.tabId;
+                  setContextMenu(null);
+                  deletePdfs(tabId);
+                }}
+              >
+                <Icon name="trash" /> Delete PDF
+              </button>
+            </>
+          ) : (
+            <>
+              <button
+                onClick={() => {
+                  setContextMenu(null);
+                  crpInputRef.current?.click();
+                }}
+              >
+                <Icon name="open" /> Import
+              </button>
+              <button
+                onClick={deleteSelectedRows}
+                disabled={!contextMenu.row || !selectedRows.size}
+              >
+                <Icon name="trash" /> Delete
+              </button>
+            </>
+          )}
+          {!contextMenu.tabId && (
+            <button onClick={() => setContextMenu(null)}>
+              <Icon name="close" /> Close Menu
+            </button>
+          )}
+        </div>
+      )}
+      {dragPreview && (
+        <div
+          className="tab-drag-preview"
+          style={{ left: dragPreview.x + 12, top: dragPreview.y + 12 }}
+        >
+          {dragPreview.header}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ReportRow({ row, index, selected, update, onSelect, onContextMenu }) {
+  const displayValue = (field) => <span>{row[field] || "-"}</span>;
+  return (
+    <tr
+      className={selected ? "selected-row" : ""}
+      onClick={onSelect}
+      onContextMenu={onContextMenu}
+    >
+      <td
+        className={`code-link ${row.checked ? (row.exists ? "checked exists" : "checked missing") : "unchecked"}`}
+        title={row.link || "-"}
+      >
+        <a
+          href={row.link || "#"}
+          target="_blank"
+          rel="noreferrer"
+          title={row.link || "-"}
+        >
+          {displayValue("number")}
+        </a>
+      </td>
+      <td title={row.category || "-"}>{displayValue("category")}</td>
+      <td title={row.description || "-"}>{displayValue("description")}</td>
+      <td className="center" title={row.products || "-"}>
+        {displayValue("products")}
+      </td>
+      <td
+        className={`center changed ${row.oldLatest && row.oldLatest !== row.latest ? "yellow" : ""}`}
+        title={`Old Data: ${row.oldLatest || "-"}\nNew Data: ${row.latest || "-"}`}
+      >
+        {displayValue("latest")}
+      </td>
+      <td
+        className={`right changed ${row.oldIssue && row.oldIssue !== row.issue ? "yellow" : ""}`}
+        title={`Old Data: ${row.oldIssue || "-"}\nNew Data: ${row.issue || "-"}`}
+      >
+        {displayValue("issue")}
+      </td>
+      <td
+        className={`right changed ${row.oldExpiration && row.oldExpiration !== row.expiration ? "yellow" : ""}`}
+        title={`Old Data: ${row.oldExpiration || "-"}\nNew Data: ${row.expiration || "-"}`}
+      >
+        {displayValue("expiration")}
+      </td>
+      <td title={`${row.progress}%`}>
+        <div className="progress">
+          <span style={{ width: `${row.progress}%` }} />
+          <b>{row.progress}%</b>
+        </div>
+      </td>
+      <td
+        title={`Checked: ${row.checked ? "Yes" : "No"}; Updated: ${row.updated ? "Yes" : "No"}`}
+      >
+        <div className="statuses">
+          <label className={row.checked ? "checked" : ""}>
+            <i /> Checked
+          </label>
+          <label className={row.updated ? "updated" : ""}>
+            <i /> Updated
+          </label>
+        </div>
+      </td>
+    </tr>
+  );
+}
+
+function DraftRow({ row, widths, total, update, onCommit }) {
+  const input = (field, placeholder = "") => (
+    <input
+      value={row[field]}
+      placeholder={placeholder}
+      onChange={(event) => update(field, event.target.value)}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          onCommit();
+        }
+      }}
+    />
+  );
+  const checkbox = (field, label) => (
+    <label>
+      <input
+        type="checkbox"
+        checked={row[field]}
+        onChange={(event) => update(field, event.target.checked)}
+      />{" "}
+      {label}
+    </label>
+  );
+  const style = (index) => ({
+    width: `${((widths[index] / total) * 100).toFixed(4)}%`,
+  });
+  return (
+    <tr className="draft-row">
+      <td title={row.number || "New report"} style={style(0)}>
+        {input("number", "New report")}
+      </td>
+      <td title={row.category || "-"} style={style(1)}>
+        {input("category")}
+      </td>
+      <td title={row.description || "-"} style={style(2)}>
+        {input("description")}
+      </td>
+      <td className="center" title={row.products || "-"} style={style(3)}>
+        {input("products")}
+      </td>
+      <td className="center" title={row.latest || "-"} style={style(4)}>
+        {input("latest")}
+      </td>
+      <td className="center" title={row.issue || "-"} style={style(5)}>
+        {input("issue")}
+      </td>
+      <td className="center" title={row.expiration || "-"} style={style(6)}>
+        {input("expiration")}
+      </td>
+      <td title="0%" style={style(7)}>
+        <div className="progress">
+          <span style={{ width: "0%" }} />
+          <b>0%</b>
+        </div>
+      </td>
+      <td
+        title={`Checked: ${row.checked ? "Yes" : "No"}; Updated: ${row.updated ? "Yes" : "No"}`}
+        style={style(8)}
+      >
+        <div className="draft-status">
+          {checkbox("checked", "Checked")}
+          {checkbox("updated", "Updated")}
+        </div>
+      </td>
+    </tr>
+  );
+}
+
+function SettingsModal({ settings, onSave, onDirectorySelected, onClose }) {
+  const [entries, setEntries] = useState(
+    Object.entries(sources).map(([name, value]) => ({ name, ...value })),
+  );
+  const [options, setOptions] = useState(settings);
+  const save = () => {
+    onSave(options);
+    onClose();
+  };
+  const chooseDirectory = async () => {
+    if (!window.showDirectoryPicker) {
+      window.alert("Folder selection is not supported by this browser.");
+      return;
+    }
+    try {
+      const handle = await window.showDirectoryPicker({ mode: "readwrite" });
+      onDirectorySelected(handle);
+      setOptions((value) => ({ ...value, downloadDirectory: handle.name }));
+    } catch (error) {
+      if (error.name !== "AbortError")
+        window.alert(`Unable to select folder: ${error.message}`);
+    }
+  };
+  return (
+    <div className="modal-backdrop">
+      <div className="modal">
+        <div className="modal-title">
+          <b>Settings</b>
+          <button onClick={onClose}>
+            <Icon name="close" />
+          </button>
+        </div>
+        <div className="setting-options">
+          <label>
+            Worker Count
+            <input
+              type="number"
+              min="1"
+              max="16"
+              value={options.workerCount}
+              onChange={(event) =>
+                setOptions((value) => ({
+                  ...value,
+                  workerCount: event.target.value,
+                }))
+              }
+            />
+          </label>
+          <label>
+            Download Directory
+            <div className="directory-picker">
+              <input
+                value={options.downloadDirectory}
+                placeholder="Enter full path or browse"
+                onChange={(event) =>
+                  setOptions((value) => ({
+                    ...value,
+                    downloadDirectory: event.target.value,
+                  }))
+                }
+              />
+              <button type="button" onClick={chooseDirectory}>
+                Browse
+              </button>
+            </div>
+            <small className="setting-note">
+              Browsers expose the selected folder name only. Enter an absolute
+              path manually if required.
+            </small>
+          </label>
+        </div>
+        <div className="settings-box">
+          <div className="settings-heading">Link Settings (table)</div>
+          <table className="settings-table">
+            <thead>
+              <tr>
+                <th>Web Name</th>
+                <th>Type</th>
+                <th>Link</th>
+                <th>PDF Folder Link</th>
+              </tr>
+            </thead>
+            <tbody>
+              {entries.map((entry, index) => (
+                <tr key={entry.name}>
+                  <td>
+                    <input
+                      value={entry.name}
+                      onChange={(e) =>
+                        setEntries((all) =>
+                          all.map((item, i) =>
+                            i === index
+                              ? { ...item, name: e.target.value }
+                              : item,
+                          ),
+                        )
+                      }
+                    />
+                  </td>
+                  <td>
+                    <select
+                      value={entry.type}
+                      onChange={(e) =>
+                        setEntries((all) =>
+                          all.map((item, i) =>
+                            i === index
+                              ? { ...item, type: e.target.value }
+                              : item,
+                          ),
+                        )
+                      }
+                    >
+                      <option>ER</option>
+                      <option>ESR</option>
+                      <option>Other</option>
+                      <option>Folder</option>
+                    </select>
+                  </td>
+                  <td>
+                    <input
+                      value={entry.link}
+                      onChange={(e) =>
+                        setEntries((all) =>
+                          all.map((item, i) =>
+                            i === index
+                              ? { ...item, link: e.target.value }
+                              : item,
+                          ),
+                        )
+                      }
+                    />
+                  </td>
+                  <td>
+                    <input
+                      value={entry.pdfFolder}
+                      onChange={(e) =>
+                        setEntries((all) =>
+                          all.map((item, i) =>
+                            i === index
+                              ? { ...item, pdfFolder: e.target.value }
+                              : item,
+                          ),
+                        )
+                      }
+                    />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div className="modal-actions">
+          <button onClick={save}>Save</button>
+          <button className="secondary" onClick={onClose}>
+            Cancel
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+createRoot(document.getElementById("root")).render(<App />);
