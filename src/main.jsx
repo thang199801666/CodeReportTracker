@@ -1,7 +1,8 @@
 import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { getDocument, GlobalWorkerOptions } from "pdfjs-dist";
-import * as XLSX from "xlsx";
+import * as XLSX from "xlsx-js-style";
+import JSZip from "jszip";
 import { invoke, isTauri as isTauriRuntime } from "@tauri-apps/api/core";
 import workerSrc from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import "./styles.css";
@@ -84,8 +85,8 @@ function Icon({ name }) {
     ),
     settings: (
       <>
-        <circle cx="12" cy="12" r="3" />
-        <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-1.7 1.7-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.1h-2.4v-.1a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L8 17l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.6-1H6.7v-2.4h.1a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L8 8.6l1.7-1.7.1.1a1.7 1.7 0 0 0 1.9.3 1.7 1.7 0 0 0 1-1.6v-.1h2.4v.1a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1 1.7 1.7-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.1V14h-.1a1.7 1.7 0 0 0-1.6 1Z" />
+        <path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z" />
+        <path d="m19.4 15 .7 1.2-1.8 1.8-1.2-.7-1.4.6-.3 1.4h-2.8l-.3-1.4-1.4-.6-1.2.7-1.8-1.8.7-1.2-.6-1.4-1.4-.3v-2.6l1.4-.3.6-1.4-.7-1.2 1.8-1.8 1.2.7 1.4-.6.3-1.4h2.8l.3 1.4 1.4.6 1.2-.7 1.8 1.8-.7 1.2.6 1.4 1.4.3v2.6l-1.4.3Z" />
       </>
     ),
     help: (
@@ -102,6 +103,12 @@ function Icon({ name }) {
     rename: (
       <>
         <path d="m4 16-.8 4.8L8 20l11.5-11.5a2.1 2.1 0 0 0-3-3L5 17" />
+        <path d="m14.5 7.5 3 3" />
+      </>
+    ),
+    edit: (
+      <>
+        <path d="m4 16-.8 4.8L8 20 19.5 8.5a2.1 2.1 0 0 0-3-3L5 17" />
         <path d="m14.5 7.5 3 3" />
       </>
     ),
@@ -512,15 +519,21 @@ function snapshotKey(data) {
 function importExcelFile(buffer) {
   const workbook = XLSX.read(buffer, { type: "array", cellStyles: true });
   const aliases = {
-    number: ["code report no", "code report number", "number"],
-    link: ["link", "url", "report link"],
+    number: [
+      "code report no",
+      "code report number",
+      "report no",
+      "report number",
+      "number",
+    ],
+    link: ["link", "url", "report link", "code report link"],
     webType: ["web type", "type"],
-    category: ["product category"],
+    category: ["product category", "category"],
     description: ["description"],
-    products: ["products listed"],
-    latest: ["latest code"],
-    issue: ["issue/rev date", "issue date", "rev date"],
-    expiration: ["expiration date", "expiration"],
+    products: ["products listed", "number of products", "products"],
+    latest: ["latest code", "latest"],
+    issue: ["issue/rev date", "issue date", "rev date", "revision date"],
+    expiration: ["expiration date", "expiration", "expires"],
     progress: ["download process", "download progress"],
     status: ["status"],
   };
@@ -528,9 +541,21 @@ function importExcelFile(buffer) {
     String(value ?? "")
       .trim()
       .toLowerCase()
-      .replace(/[\s_]+/g, " ");
-  const findHeader = (headers, names) =>
-    headers.findIndex((header) => names.includes(normalize(header)));
+      .replace(/[#/&]+/g, " ")
+      .replace(/[^a-z0-9]+/g, " ")
+      .replace(/\s+/g, " ");
+  const normalizedAliases = Object.fromEntries(
+    Object.entries(aliases).map(([field, names]) => [
+      field,
+      names.map(normalize),
+    ]),
+  );
+  const findHeader = (headers, field) => {
+    const names = normalizedAliases[field];
+    return (
+      headers.find(({ text }) => names.includes(normalize(text)))?.column ?? -1
+    );
+  };
   const readCell = (sheet, row, column) => {
     if (column < 0) return { text: "", link: "" };
     const cell = sheet[XLSX.utils.encode_cell({ r: row, c: column })];
@@ -539,17 +564,32 @@ function importExcelFile(buffer) {
   return workbook.SheetNames.map((sheetName, sheetIndex) => {
     const sheet = workbook.Sheets[sheetName];
     const range = XLSX.utils.decode_range(sheet["!ref"] || "A1");
-    const headers = [];
-    for (let column = range.s.c; column <= range.e.c; column += 1)
-      headers.push(readCell(sheet, range.s.r, column).text);
-    const indexes = Object.fromEntries(
-      Object.entries(aliases).map(([field, names]) => [
-        field,
-        findHeader(headers, names),
-      ]),
-    );
+    let headerRow = -1;
+    let indexes = null;
+    let bestScore = 0;
+    const lastHeaderRow = Math.min(range.e.r, range.s.r + 20);
+    for (let row = range.s.r; row <= lastHeaderRow; row += 1) {
+      const headers = [];
+      for (let column = range.s.c; column <= range.e.c; column += 1)
+        headers.push({ column, text: readCell(sheet, row, column).text });
+      const candidate = Object.fromEntries(
+        Object.keys(aliases).map((field) => [
+          field,
+          findHeader(headers, field),
+        ]),
+      );
+      const score = Object.entries(candidate).filter(
+        ([field, column]) => column >= 0 && field !== "status",
+      ).length;
+      if (candidate.number >= 0 && score > bestScore) {
+        bestScore = score;
+        headerRow = row;
+        indexes = candidate;
+      }
+    }
+    if (headerRow < 0 || !indexes) return null;
     const items = [];
-    for (let row = range.s.r + 1; row <= range.e.r; row += 1) {
+    for (let row = headerRow + 1; row <= range.e.r; row += 1) {
       const values = Object.fromEntries(
         Object.entries(indexes).map(([field, column]) => [
           field,
@@ -557,6 +597,7 @@ function importExcelFile(buffer) {
         ]),
       );
       const text = (field) => String(values[field]?.text ?? "").trim();
+      if (!text("number")) continue;
       if (
         !Object.values(values).some((value) => value.text !== "" || value.link)
       )
@@ -577,9 +618,9 @@ function importExcelFile(buffer) {
         oldExpiration: "",
         progress: Number.parseInt(text("progress"), 10) || 0,
         lastCheck: "",
-        checked: status.includes("check") || status.includes("true"),
+        checked: false,
         updated: status.includes("update"),
-        exists: true,
+        exists: false,
       });
     }
     return {
@@ -587,6 +628,430 @@ function importExcelFile(buffer) {
       header: sheetName || "New Tab",
       items,
     };
+  }).filter(Boolean);
+}
+
+function updateExcelWorkbook(buffer, tabs, log) {
+  const workbook = XLSX.read(buffer, { type: "array", cellStyles: true });
+  const aliases = {
+    number: [
+      "code report no",
+      "code report number",
+      "report no",
+      "report number",
+      "number",
+    ],
+    latest: ["latest code", "latest"],
+    issue: ["issue/rev date", "issue date", "rev date", "revision date"],
+    expiration: ["expiration date", "expiration", "expires"],
+  };
+  const normalize = (value) =>
+    String(value ?? "")
+      .trim()
+      .toLowerCase()
+      .replace(/[#/&]+/g, " ")
+      .replace(/[^a-z0-9]+/g, " ")
+      .replace(/\s+/g, " ");
+  const codeKey = (value) =>
+    String(value ?? "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]/g, "");
+  const excelNumber = (value) => {
+    const text = String(value ?? "").trim();
+    if (/^\d+(?:\.\d+)?$/.test(text)) return text;
+    const match = text.match(
+      /^(January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*[\s-]+(\d{4})$/i,
+    );
+    if (!match) return null;
+    const date = new Date(
+      Date.UTC(
+        Number(match[2]),
+        new Date(`${match[1]} 1, 2000`).getUTCMonth(),
+        1,
+      ),
+    );
+    return String(
+      Math.floor((date.getTime() - Date.UTC(1899, 11, 30)) / 86400000),
+    );
+  };
+  const readText = (sheet, row, column) => {
+    if (column < 0) return "";
+    const cell = sheet[XLSX.utils.encode_cell({ r: row, c: column })];
+    return String(cell?.w ?? cell?.v ?? "").trim();
+  };
+  const findColumn = (headers, names) =>
+    headers.find(({ text }) => names.includes(normalize(text)))?.column ?? -1;
+  const setCell = (sheet, row, column, value) => {
+    if (column < 0) return;
+    const address = XLSX.utils.encode_cell({ r: row, c: column });
+    const cell = sheet[address] || {};
+    cell.v = value || "";
+    cell.w = value || "";
+    cell.t = "s";
+    sheet[address] = cell;
+  };
+  const sheetByName = new Map(
+    workbook.SheetNames.map((name) => [normalize(name), name]),
+  );
+  let updatedCount = 0;
+  for (const tab of tabs) {
+    const sheetName = sheetByName.get(normalize(tab.header));
+    if (!sheetName) {
+      log(`Export skipped tab '${tab.header}': matching sheet not found.`);
+      continue;
+    }
+    const sheet = workbook.Sheets[sheetName];
+    const range = XLSX.utils.decode_range(sheet["!ref"] || "A1");
+    let layout = null;
+    for (
+      let row = range.s.r;
+      row <= Math.min(range.e.r, range.s.r + 20);
+      row += 1
+    ) {
+      const headers = [];
+      for (let column = range.s.c; column <= range.e.c; column += 1)
+        headers.push({ column, text: readText(sheet, row, column) });
+      const candidate = Object.fromEntries(
+        Object.entries(aliases).map(([field, names]) => [
+          field,
+          findColumn(headers, names.map(normalize)),
+        ]),
+      );
+      if (candidate.number >= 0 && candidate.latest >= 0) {
+        layout = { row, ...candidate };
+        break;
+      }
+    }
+    if (!layout) {
+      log(`Export skipped tab '${tab.header}': required headers not found.`);
+      continue;
+    }
+    const rows = new Map(
+      tab.items
+        .map((item) => [codeKey(item.number), item])
+        .filter(([key]) => key),
+    );
+    let sheetUpdated = 0;
+    for (let row = layout.row + 1; row <= range.e.r; row += 1) {
+      const item = rows.get(codeKey(readText(sheet, row, layout.number)));
+      if (!item) continue;
+      setCell(sheet, row, layout.latest, item.latest);
+      setCell(sheet, row, layout.issue, item.issue);
+      setCell(sheet, row, layout.expiration, item.expiration);
+      sheetUpdated += 1;
+    }
+    updatedCount += sheetUpdated;
+    log(`Export updated ${sheetUpdated} row(s) in '${sheetName}'.`);
+  }
+  return {
+    data: XLSX.write(workbook, { type: "array", bookType: "xlsx" }),
+    updatedCount,
+  };
+}
+
+async function updateExcelTemplate(buffer, tabs, log) {
+  const workbook = XLSX.read(buffer, { type: "array", cellStyles: true });
+  const normalize = (value) =>
+    String(value ?? "")
+      .trim()
+      .toLowerCase()
+      .replace(/[#/&]+/g, " ")
+      .replace(/[^a-z0-9]+/g, " ")
+      .replace(/\s+/g, " ");
+  const codeKey = (value) =>
+    String(value ?? "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]/g, "");
+  const excelNumber = (value) => {
+    const text = String(value ?? "").trim();
+    if (/^\d+(?:\.\d+)?$/.test(text)) return text;
+    const match = text.match(
+      /^(January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*[\s-]+(\d{4})$/i,
+    );
+    if (!match) return null;
+    const date = new Date(
+      Date.UTC(
+        Number(match[2]),
+        new Date(`${match[1]} 1, 2000`).getUTCMonth(),
+        1,
+      ),
+    );
+    return String(
+      Math.floor((date.getTime() - Date.UTC(1899, 11, 30)) / 86400000),
+    );
+  };
+  const aliases = {
+    number: [
+      "code report no",
+      "code report number",
+      "report no",
+      "report number",
+      "number",
+    ],
+    latest: ["latest code", "latest"],
+    issue: ["issue/rev date", "issue date", "rev date", "revision date"],
+    expiration: ["expiration date", "expiration", "expires"],
+  };
+  const readText = (sheet, row, column) => {
+    if (column < 0) return "";
+    const cell = sheet[XLSX.utils.encode_cell({ r: row, c: column })];
+    return String(cell?.w ?? cell?.v ?? "").trim();
+  };
+  const updatesBySheet = new Map();
+  const sheetByName = new Map(
+    workbook.SheetNames.map((name) => [normalize(name), name]),
+  );
+  let updatedCount = 0;
+  for (const tab of tabs) {
+    const sheetName = sheetByName.get(normalize(tab.header));
+    if (!sheetName) {
+      log(`Export skipped tab '${tab.header}': matching sheet not found.`);
+      continue;
+    }
+    const sheet = workbook.Sheets[sheetName];
+    const range = XLSX.utils.decode_range(sheet["!ref"] || "A1");
+    let layout = null;
+    for (
+      let row = range.s.r;
+      row <= Math.min(range.e.r, range.s.r + 20);
+      row += 1
+    ) {
+      const headers = [];
+      for (let column = range.s.c; column <= range.e.c; column += 1)
+        headers.push({ column, text: readText(sheet, row, column) });
+      const candidate = Object.fromEntries(
+        Object.entries(aliases).map(([field, names]) => [
+          field,
+          headers.find(({ text }) =>
+            names.map(normalize).includes(normalize(text)),
+          )?.column ?? -1,
+        ]),
+      );
+      if (candidate.number >= 0 && candidate.latest >= 0) {
+        layout = { row, ...candidate };
+        break;
+      }
+    }
+    if (!layout) {
+      log(`Export skipped tab '${tab.header}': required headers not found.`);
+      continue;
+    }
+    const rows = new Map(
+      tab.items
+        .map((item) => [codeKey(item.number), item])
+        .filter(([key]) => key),
+    );
+    const updates = [];
+    let changedRows = 0;
+    for (let row = layout.row + 1; row <= range.e.r; row += 1) {
+      const item = rows.get(codeKey(readText(sheet, row, layout.number)));
+      if (!item) continue;
+      const rowUpdates = [
+        [layout.latest, item.latest],
+        [layout.issue, item.issue],
+        [layout.expiration, item.expiration],
+      ]
+        .filter(
+          ([column, value]) =>
+            column >= 0 && readText(sheet, row, column) !== String(value || ""),
+        )
+        .map(([column, value]) => ({
+          address: XLSX.utils.encode_cell({ r: row, c: column }),
+          value: value || "",
+        }));
+      updates.push(...rowUpdates);
+      if (rowUpdates.length) {
+        updatedCount += 1;
+        changedRows += 1;
+      }
+    }
+    updatesBySheet.set(sheetName, updates);
+    log(`Export prepared ${changedRows} row(s) in '${sheetName}'.`);
+  }
+
+  const zip = await JSZip.loadAsync(buffer);
+  const workbookXml = new DOMParser().parseFromString(
+    await zip.file("xl/workbook.xml").async("string"),
+    "application/xml",
+  );
+  const relationshipsXml = new DOMParser().parseFromString(
+    await zip.file("xl/_rels/workbook.xml.rels").async("string"),
+    "application/xml",
+  );
+  const relationships = new Map(
+    Array.from(relationshipsXml.getElementsByTagName("Relationship")).map(
+      (relationship) => [
+        relationship.getAttribute("Id"),
+        relationship.getAttribute("Target"),
+      ],
+    ),
+  );
+  const styleMap = new Map();
+  const sheets = Array.from(workbookXml.getElementsByTagNameNS("*", "sheet"));
+  let modifiedCells = 0;
+  for (const sheetNode of sheets) {
+    const sheetName = sheetNode.getAttribute("name");
+    const updates = updatesBySheet.get(sheetName);
+    if (!updates?.length) continue;
+    const relationshipId =
+      sheetNode.getAttribute("r:id") ||
+      sheetNode.getAttributeNS(
+        "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
+        "id",
+      );
+    const target = relationships.get(relationshipId);
+    if (!target) continue;
+    const xmlPath = target.startsWith("/")
+      ? target.slice(1)
+      : `xl/${target.replace(/^\.\//, "")}`;
+    let sheetXml = await zip.file(xmlPath).async("string");
+    for (const update of updates) {
+      const address = update.address.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const cellPattern = new RegExp(
+        `<c(\\s[^>]*\\br="${address}"[^>]*)>([\\s\\S]*?)</c>|<c(\\s[^>]*\\br="${address}"[^>]*)\\s*/>`,
+      );
+      const match = sheetXml.match(cellPattern);
+      if (!match) continue;
+      const attributes = match[1] || match[3];
+      const originalStyle = Number.parseInt(
+        attributes.match(/\bs="(\d+)"/)?.[1] || "0",
+        10,
+      );
+      const orangeStyle = styleMap.get("orangeStyles")?.get(originalStyle);
+      let nextAttributes = attributes.replace(/\s+t="[^"]*"/g, "");
+      if (orangeStyle != null) {
+        nextAttributes = /\bs="\d+"/.test(nextAttributes)
+          ? nextAttributes.replace(/\bs="\d+"/, `s="${orangeStyle}"`)
+          : `${nextAttributes} s="${orangeStyle}"`;
+      }
+      const escapedValue = String(update.value || "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+      const originalType = attributes.match(/\bt="([^"]+)"/)?.[1];
+      const numericValue =
+        !originalType || originalType === "n"
+          ? excelNumber(update.value)
+          : null;
+      if (numericValue !== null) {
+        nextAttributes = nextAttributes.replace(/\s+t="[^"]*"/g, "");
+        sheetXml = sheetXml.replace(
+          cellPattern,
+          `<c${nextAttributes}><v>${numericValue}</v></c>`,
+        );
+        modifiedCells += 1;
+        continue;
+      }
+      const preserveSpace = /^\s|\s$/.test(String(update.value || ""))
+        ? ' xml:space="preserve"'
+        : "";
+      const replacement = `<c${nextAttributes} t="inlineStr"><is><t${preserveSpace}>${escapedValue}</t></is></c>`;
+      sheetXml = sheetXml.replace(cellPattern, replacement);
+      modifiedCells += 1;
+    }
+    zip.file(xmlPath, sheetXml);
+  }
+  return {
+    data: await zip.generateAsync({ type: "uint8array" }),
+    updatedCount,
+    modifiedCells,
+  };
+}
+
+function buildTabsWorkbook(tabs) {
+  const workbook = XLSX.utils.book_new();
+  const headers = [
+    "Code Report No",
+    "Product Category",
+    "Description",
+    "Products Listed",
+    "Latest Code",
+    "Issue/Rev Date",
+    "Expiration Date",
+  ];
+  const usedNames = new Set();
+  const sheetName = (value, index) => {
+    const base =
+      String(value || `Tab ${index + 1}`)
+        .replace(/[\\/*?:[\]]/g, " ")
+        .trim()
+        .slice(0, 31) || `Tab ${index + 1}`;
+    let name = base;
+    let suffix = 2;
+    while (usedNames.has(name)) {
+      const tail = ` (${suffix})`;
+      name = `${base.slice(0, 31 - tail.length)}${tail}`;
+      suffix += 1;
+    }
+    usedNames.add(name);
+    return name;
+  };
+  const headerStyle = {
+    fill: { fgColor: { rgb: "FF1F4E78" } },
+    font: { bold: true, color: { rgb: "FFFFFFFF" } },
+    alignment: { horizontal: "center", vertical: "center", wrapText: true },
+  };
+  const orangeStyle = { fill: { fgColor: { rgb: "FFFFC000" } } };
+  const linkStyle = {
+    font: { color: { rgb: "FF2E8DEF" }, underline: "single" },
+  };
+  const missingLinkStyle = {
+    font: { color: { rgb: "FFC43D3D" }, underline: "single" },
+  };
+  tabs.forEach((tab, tabIndex) => {
+    const rows = [
+      headers,
+      ...tab.items.map((row) => [
+        row.number || "",
+        row.category || "",
+        row.description || "",
+        row.products || "",
+        row.latest || "",
+        row.issue || "",
+        row.expiration || "",
+      ]),
+    ];
+    const sheet = XLSX.utils.aoa_to_sheet(rows);
+    sheet["!cols"] = [
+      { wch: 18 },
+      { wch: 22 },
+      { wch: 38 },
+      { wch: 18 },
+      { wch: 14 },
+      { wch: 18 },
+      { wch: 18 },
+    ];
+    sheet["!rows"] = [{ hpt: 28 }];
+    headers.forEach((_, column) => {
+      const cell = sheet[XLSX.utils.encode_cell({ r: 0, c: column })];
+      if (cell) cell.s = headerStyle;
+    });
+    tab.items.forEach((row, rowIndex) => {
+      const excelRow = rowIndex + 1;
+      const linkCell = sheet[XLSX.utils.encode_cell({ r: excelRow, c: 0 })];
+      if (linkCell) {
+        linkCell.s = row.checked && !row.exists ? missingLinkStyle : linkStyle;
+        if (row.link) linkCell.l = { Target: row.link };
+      }
+      [
+        [4, row.oldLatest, row.latest],
+        [5, row.oldIssue, row.issue],
+        [6, row.oldExpiration, row.expiration],
+      ].forEach(([column, oldValue, newValue]) => {
+        const cell = sheet[XLSX.utils.encode_cell({ r: excelRow, c: column })];
+        if (cell && oldValue && oldValue !== newValue) cell.s = orangeStyle;
+      });
+    });
+    XLSX.utils.book_append_sheet(
+      workbook,
+      sheet,
+      sheetName(tab.header, tabIndex),
+    );
+  });
+  return XLSX.write(workbook, {
+    type: "array",
+    bookType: "xlsx",
+    cellStyles: true,
   });
 }
 
@@ -681,6 +1146,7 @@ function App() {
     updated: false,
   });
   const [contextMenu, setContextMenu] = useState(null);
+  const [editingRowIndex, setEditingRowIndex] = useState(null);
   const [isDirty, setIsDirty] = useState(false);
   const [consoleHeight, setConsoleHeight] = useState(142);
   const [resizingConsole, setResizingConsole] = useState(false);
@@ -698,6 +1164,8 @@ function App() {
     }
   });
   const crpInputRef = useRef(null);
+  const exportInputRef = useRef(null);
+  const exportModeRef = useRef("new");
   const operationControllerRef = useRef(null);
   const savedSnapshotRef = useRef(snapshotKey(writeCrpFile(tabs)));
   const loadedSnapshotRef = useRef(null);
@@ -741,6 +1209,7 @@ function App() {
     const showContextMenu = (event) => {
       if (event.defaultPrevented) return;
       event.preventDefault();
+      if (!event.target.closest(".table-wrap")) return;
       setContextMenu({ x: event.clientX, y: event.clientY });
     };
     const closeContextMenu = () => setContextMenu(null);
@@ -817,9 +1286,11 @@ function App() {
       next.splice(targetIndex, 0, moved);
       return next;
     });
-    setDraggedTabId(null);
-    setDragOverTabId(null);
-    setDragPreview(null);
+  };
+  const moveTabOver = (targetId) => {
+    if (dragOverTabId === targetId) return;
+    reorderTabs(targetId);
+    setDragOverTabId(targetId);
   };
   const startTabDrag = (event, tab) => {
     setDraggedTabId(tab.id);
@@ -922,6 +1393,11 @@ function App() {
     setLastSelectedRow(null);
     setContextMenu(null);
     log(`Deleted ${count} selected row(s).`);
+  };
+  const editSelectedRow = () => {
+    if (selectedRows.size !== 1) return;
+    setEditingRowIndex([...selectedRows][0]);
+    setContextMenu(null);
   };
   const runCheck = async (mode = "update") => {
     if (!current.items.length) {
@@ -1224,6 +1700,141 @@ function App() {
     }
     event.target.value = "";
   };
+  const exportExcelBuffer = async (buffer, fileName, overwritePath = null) => {
+    try {
+      const result = await updateExcelTemplate(buffer, tabs, log);
+      if (overwritePath) {
+        await invoke("overwrite_file", {
+          path: overwritePath,
+          data: Array.from(result.data),
+        });
+        log(
+          `Overwrote ${result.updatedCount} row(s), ${result.modifiedCells} cell(s) in ${overwritePath}.`,
+        );
+      } else if (isTauri) {
+        const path = await invoke("save_excel", {
+          data: Array.from(result.data),
+        });
+        if (path)
+          log(
+            `Exported ${result.updatedCount} row(s), ${result.modifiedCells} cell(s) to ${path}.`,
+          );
+      } else {
+        const outputName = `${fileName.replace(/\.[^.]+$/, "")}-updated.xlsx`;
+        const blob = new Blob([result.data], {
+          type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        });
+        const objectUrl = URL.createObjectURL(blob);
+        const anchor = document.createElement("a");
+        anchor.href = objectUrl;
+        anchor.download = outputName;
+        anchor.click();
+        window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+        log(
+          `Exported ${result.updatedCount} row(s), ${result.modifiedCells} cell(s) to ${outputName}.`,
+        );
+      }
+    } catch (error) {
+      log(`Excel export failed: ${error.message || error}`);
+    }
+  };
+  const exportExcelFile = async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    if (exportModeRef.current === "overwrite") {
+      window.alert(
+        "Overwriting an existing file requires the Tauri desktop app.",
+      );
+      event.target.value = "";
+      return;
+    }
+    await exportExcelBuffer(await file.arrayBuffer(), file.name);
+    event.target.value = "";
+  };
+  const startExcelExport = async (mode) => {
+    exportModeRef.current = mode;
+    if (!isTauri) {
+      if (mode === "overwrite") {
+        if (!window.showOpenFilePicker) {
+          window.alert(
+            "Overwriting requires a browser with File System Access API support, such as Chrome or Edge.",
+          );
+          return;
+        }
+        try {
+          const [handle] = await window.showOpenFilePicker({
+            types: [
+              {
+                description: "Excel Workbook",
+                accept: {
+                  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
+                    [".xlsx"],
+                  "application/vnd.ms-excel": [".xls"],
+                },
+              },
+            ],
+            multiple: false,
+          });
+          const file = await handle.getFile();
+          const result = await updateExcelTemplate(
+            await file.arrayBuffer(),
+            tabs,
+            log,
+          );
+          const permission = await handle.queryPermission({
+            mode: "readwrite",
+          });
+          if (permission !== "granted")
+            await handle.requestPermission({ mode: "readwrite" });
+          const writable = await handle.createWritable();
+          await writable.write(result.data);
+          await writable.close();
+          log(
+            `Overwrote ${result.updatedCount} row(s), ${result.modifiedCells} cell(s) in ${file.name}.`,
+          );
+        } catch (error) {
+          if (error.name !== "AbortError")
+            log(`Excel overwrite failed: ${error.message || error}`);
+        }
+        return;
+      }
+      exportInputRef.current?.click();
+      return;
+    }
+    try {
+      const selected = await invoke("pick_excel_file");
+      if (!selected) return;
+      await exportExcelBuffer(
+        new Uint8Array(selected.data).buffer,
+        selected.path,
+        mode === "overwrite" ? selected.path : null,
+      );
+    } catch (error) {
+      log(`Excel file selection failed: ${error.message || error}`);
+    }
+  };
+  const exportTabsToFile = async () => {
+    try {
+      const data = buildTabsWorkbook(tabs);
+      if (isTauri) {
+        const path = await invoke("save_excel", { data: Array.from(data) });
+        if (path) log(`Exported ${tabs.length} tab(s) to ${path}.`);
+        return;
+      }
+      const blob = new Blob([data], {
+        type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      });
+      const objectUrl = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = objectUrl;
+      anchor.download = "code-report-tracker.xlsx";
+      anchor.click();
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+      log(`Exported ${tabs.length} tab(s) to code-report-tracker.xlsx.`);
+    } catch (error) {
+      log(`Excel export failed: ${error.message || error}`);
+    }
+  };
   const saveReport = async () => {
     const data = writeCrpFile(tabs);
     if (isTauri) {
@@ -1373,6 +1984,13 @@ function App() {
         accept=".crp,.xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
         onChange={openDataFile}
       />
+      <input
+        ref={exportInputRef}
+        className="hidden-file-input"
+        type="file"
+        accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
+        onChange={exportExcelFile}
+      />
       <div className="titlebar">
         <div className="app-title">
           <span className="app-logo">CR</span>
@@ -1408,8 +2026,14 @@ function App() {
                 <Button icon="save" onClick={saveReport}>
                   Save
                 </Button>
-                <Button icon="excel" disabled={busy}>
-                  Export
+                <Button
+                  icon="open"
+                  onClick={() => crpInputRef.current?.click()}
+                >
+                  Import
+                </Button>
+                <Button icon="excel" onClick={exportTabsToFile} disabled={busy}>
+                  Export to File
                 </Button>
               </div>
               <small>File</small>
@@ -1496,9 +2120,12 @@ function App() {
               onDrag={(event) => moveTabDrag(event)}
               onDragOver={(event) => {
                 event.preventDefault();
-                setDragOverTabId(tab.id);
+                moveTabOver(tab.id);
               }}
-              onDrop={() => reorderTabs(tab.id)}
+              onDrop={(event) => {
+                event.preventDefault();
+                endTabDrag();
+              }}
               onDragEnd={endTabDrag}
               onClick={() => selectTab(tab.id)}
               onDoubleClick={() => setEditingTabId(tab.id)}
@@ -1588,7 +2215,26 @@ function App() {
             {busy ? "Running..." : "Ready"} · Drag the bar above to resize
           </span>
         </div>
-        <textarea ref={consoleRef} value={consoleText} readOnly />
+        <div ref={consoleRef} className="console-output">
+          {consoleText.split("\n").map((line, index) => {
+            if (!line) return null;
+            const tone =
+              /failed|error|missing|skipped|unavailable|aborted|cancelled/i.test(
+                line,
+              )
+                ? "error"
+                : /downloaded|completed|finished|saved|exported|updated|created|deleted|found/i.test(
+                      line,
+                    )
+                  ? "success"
+                  : "normal";
+            return (
+              <div className={`console-line ${tone}`} key={`${index}-${line}`}>
+                {line}
+              </div>
+            );
+          })}
+        </div>
       </section>
       <footer>
         <span>Code Report Tracker</span>
@@ -1602,6 +2248,17 @@ function App() {
           onSave={saveSettings}
           onDirectorySelected={setDownloadDirectory}
           onClose={() => setShowSettings(false)}
+        />
+      )}
+      {editingRowIndex !== null && current.items[editingRowIndex] && (
+        <RowEditModal
+          row={current.items[editingRowIndex]}
+          onSave={(changes) => {
+            updateRow(editingRowIndex, changes);
+            setEditingRowIndex(null);
+            log(`Edited ${current.items[editingRowIndex].number || "row"}.`);
+          }}
+          onClose={() => setEditingRowIndex(null)}
         />
       )}
       {contextMenu && (
@@ -1650,17 +2307,18 @@ function App() {
                 <Icon name="open" /> Import
               </button>
               <button
+                onClick={editSelectedRow}
+                disabled={!contextMenu.row || selectedRows.size !== 1}
+              >
+                <Icon name="edit" /> Edit
+              </button>
+              <button
                 onClick={deleteSelectedRows}
                 disabled={!contextMenu.row || !selectedRows.size}
               >
                 <Icon name="trash" /> Delete
               </button>
             </>
-          )}
-          {!contextMenu.tabId && (
-            <button onClick={() => setContextMenu(null)}>
-              <Icon name="close" /> Close Menu
-            </button>
           )}
         </div>
       )}
@@ -1812,6 +2470,54 @@ function DraftRow({ row, widths, total, update, onCommit }) {
         </div>
       </td>
     </tr>
+  );
+}
+
+function RowEditModal({ row, onSave, onClose }) {
+  const [draft, setDraft] = useState({ ...row });
+  const fields = [
+    ["number", "Code Report No"],
+    ["link", "Link"],
+    ["category", "Product Category"],
+    ["description", "Description"],
+    ["products", "Products Listed"],
+    ["latest", "Latest Code"],
+    ["issue", "Issue/Rev Date"],
+    ["expiration", "Expiration Date"],
+  ];
+  return (
+    <div className="modal-backdrop">
+      <div className="modal row-edit-modal">
+        <div className="modal-title">
+          <b>Edit Row</b>
+          <button onClick={onClose}>
+            <Icon name="close" />
+          </button>
+        </div>
+        <div className="row-edit-fields">
+          {fields.map(([field, label]) => (
+            <label key={field}>
+              {label}
+              <input
+                value={draft[field] || ""}
+                onChange={(event) =>
+                  setDraft((value) => ({
+                    ...value,
+                    [field]: event.target.value,
+                  }))
+                }
+              />
+            </label>
+          ))}
+        </div>
+        <div className="modal-actions">
+          <button onClick={onClose}>Cancel</button>
+          <button className="primary" onClick={() => onSave(draft)}>
+            Save
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 

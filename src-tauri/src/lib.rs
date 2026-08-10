@@ -2,6 +2,12 @@ use std::{fs, path::{Path, PathBuf}, process::Command};
 
 use tauri_plugin_dialog::DialogExt;
 
+#[derive(serde::Serialize)]
+struct ExcelFile {
+    path: String,
+    data: Vec<u8>,
+}
+
 fn safe_name(value: &str) -> String {
     let cleaned: String = value
         .chars()
@@ -74,10 +80,46 @@ fn save_crp(app: tauri::AppHandle, data: Vec<u8>) -> Result<Option<String>, Stri
     Ok(Some(path))
 }
 
+#[tauri::command]
+fn save_excel(app: tauri::AppHandle, data: Vec<u8>) -> Result<Option<String>, String> {
+    let Some(path) = app
+        .dialog()
+        .file()
+        .add_filter("Excel Workbook", &["xlsx", "xls"])
+        .set_file_name("updated-report.xlsx")
+        .blocking_save_file()
+    else {
+        return Ok(None);
+    };
+    let path = path.to_string();
+    fs::write(&path, data).map_err(|error| error.to_string())?;
+    Ok(Some(path))
+}
+
+#[tauri::command]
+fn pick_excel_file(app: tauri::AppHandle) -> Result<Option<ExcelFile>, String> {
+    let Some(path) = app
+        .dialog()
+        .file()
+        .add_filter("Excel Workbook", &["xlsx", "xls"])
+        .blocking_pick_file()
+    else {
+        return Ok(None);
+    };
+    let path = path.to_string();
+    let data = fs::read(&path).map_err(|error| error.to_string())?;
+    Ok(Some(ExcelFile { path, data }))
+}
+
+#[tauri::command]
+fn overwrite_file(path: String, data: Vec<u8>) -> Result<(), String> {
+    fs::write(path, data).map_err(|error| error.to_string())
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .invoke_handler(tauri::generate_handler![pick_directory, write_pdf, read_pdf, delete_pdfs, open_folder, save_crp])
+        .invoke_handler(tauri::generate_handler![pick_directory, write_pdf, read_pdf, delete_pdfs, open_folder, save_crp, save_excel, pick_excel_file, overwrite_file])
         .run(tauri::generate_context!())
         .expect("error while running Code Report Tracker");
 }
