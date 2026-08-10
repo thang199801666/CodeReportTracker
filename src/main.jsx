@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { getDocument, GlobalWorkerOptions } from "pdfjs-dist";
 import * as XLSX from "xlsx";
+import { invoke, isTauri as isTauriRuntime } from "@tauri-apps/api/core";
 import workerSrc from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import "./styles.css";
 
@@ -26,6 +27,8 @@ const sources = {
 };
 
 const defaultColumnWidths = [105, 130, 220, 100, 105, 105, 105, 135, 155];
+const isTauri = isTauriRuntime();
+const isAbsolutePath = (value) => /^(?:[A-Za-z]:[\\/]|\\\\)/.test(value || "");
 
 function Icon({ name }) {
   const shapes = {
@@ -112,6 +115,17 @@ function Icon({ name }) {
         <path d="m4 6 6 6-6 6M12 18h8" />
       </>
     ),
+    github: (
+      <>
+        <path d="M9 19c-4 .9-4-2-5-2m10 4v-3.9c0-1 .1-1.4-.5-2.1 2.1-.2 4.3-1 4.3-4.5 0-1-.4-1.9-1-2.6.1-.2.4-1.2-.1-2.5 0 0-.8-.3-2.7 1a9.4 9.4 0 0 0-5 0c-1.9-1.3-2.7-1-2.7-1-.5 1.3-.2 2.3-.1 2.5-.6.7-1 1.6-1 2.6 0 3.5 2.2 4.3 4.3 4.5-.6.5-.6 1.1-.6 2.1V21" />
+      </>
+    ),
+    folder: (
+      <>
+        <path d="M3 6h7l2 2h9v11H3z" />
+        <path d="M3 6v-1h7l2 2" />
+      </>
+    ),
   };
   return (
     <svg
@@ -171,6 +185,16 @@ async function readFirstPage(url, signal) {
   const page = await pdf.getPage(1);
   const content = await page.getTextContent();
   return { text: content.items.map((item) => item.str).join(" "), blob };
+}
+
+async function readLocalPdfFirstPage(file) {
+  const bytes = await file.arrayBuffer();
+  const loadingTask = getDocument({ data: bytes });
+  loadingTask.onPassword = (callback) => callback("");
+  const pdf = await loadingTask.promise;
+  const page = await pdf.getPage(1);
+  const content = await page.getTextContent();
+  return content.items.map((item) => item.str).join(" ");
 }
 
 async function resolveEmbeddedPdf(url, signal) {
@@ -657,6 +681,7 @@ function App() {
   const [consoleHeight, setConsoleHeight] = useState(142);
   const [resizingConsole, setResizingConsole] = useState(false);
   const downloadDirectoryRef = useRef(null);
+  const consoleRef = useRef(null);
   const [settings, setSettings] = useState(() => {
     try {
       return {
@@ -672,9 +697,21 @@ function App() {
   const operationControllerRef = useRef(null);
   const savedSnapshotRef = useRef(writeCrpFile(tabs));
   const loadedSnapshotRef = useRef(null);
+  const snapshotInitializedRef = useRef(false);
   const current = tabs.find((tab) => tab.id === selectedId) || tabs[0];
   useEffect(() => {
+    if (isTauri && isAbsolutePath(settings.downloadDirectory)) {
+      downloadDirectoryRef.current = settings.downloadDirectory;
+    }
+  }, [settings.downloadDirectory]);
+  useEffect(() => {
     const snapshot = writeCrpFile(tabs);
+    if (!snapshotInitializedRef.current) {
+      savedSnapshotRef.current = snapshot;
+      snapshotInitializedRef.current = true;
+      setIsDirty(false);
+      return;
+    }
     if (loadedSnapshotRef.current !== null) {
       savedSnapshotRef.current = loadedSnapshotRef.current;
       loadedSnapshotRef.current = null;
@@ -692,6 +729,10 @@ function App() {
     window.addEventListener("beforeunload", warnBeforeClose);
     return () => window.removeEventListener("beforeunload", warnBeforeClose);
   }, [isDirty]);
+  useEffect(() => {
+    if (consoleRef.current)
+      consoleRef.current.scrollTop = consoleRef.current.scrollHeight;
+  }, [consoleText]);
   useEffect(() => {
     const showContextMenu = (event) => {
       if (event.defaultPrevented) return;
@@ -883,20 +924,47 @@ function App() {
       log(`${mode} aborted: no rows to process.`);
       return;
     }
+    let localDirectory = null;
+    if (mode === "local") {
+      const rootDirectory = await ensureDownloadDirectory("Update Local");
+      if (!rootDirectory) return;
+      try {
+        if (isTauri) {
+          localDirectory = rootDirectory;
+        } else {
+          const permission = await rootDirectory.queryPermission({
+            mode: "read",
+          });
+          if (permission !== "granted")
+            await rootDirectory.requestPermission({ mode: "read" });
+          localDirectory = await rootDirectory.getDirectoryHandle(
+            safeDirectoryName(current.header),
+            { create: false },
+          );
+        }
+      } catch (error) {
+        log(
+          error.name === "NotFoundError"
+            ? `Update Local skipped: folder '${current.header}' was not found. Download PDFs for this tab first.`
+            : `Update Local failed: ${formatOperationError(error)}`,
+        );
+        return;
+      }
+    }
     setBusy(true);
     const controller = new AbortController();
     operationControllerRef.current = controller;
     log(
       mode === "check"
         ? "Check Link started: checking PDF existence..."
-        : "Search started: reading first page of PDFs with 4 workers...",
+        : `${mode === "local" ? "Update Local" : "Search"} started: reading first page of PDFs with 4 workers...`,
     );
     await runConcurrent(
       current.items.length,
       async (i) => {
         const row = current.items[i];
         if (controller.signal.aborted) return;
-        if (mode !== "check" && !row.link) {
+        if (mode !== "check" && mode !== "local" && !row.link) {
           log(`${row.number || "(unnamed)"} skipped: no link.`);
           return;
         }
@@ -912,28 +980,48 @@ function App() {
               `Checked ${row.number || "(unnamed)"}: PDF ${result.exists ? "found" : "missing"}`,
             );
           } else {
-            const { text, sourceUrl } = await readCodeFirstPage(
-              row,
-              controller.signal,
-            );
+            let text;
+            if (mode === "local") {
+              const fileName = `${row.number || "report"}.pdf`;
+              if (isTauri) {
+                const bytes = await invoke("read_pdf", {
+                  root: localDirectory,
+                  tab: current.header,
+                  fileName,
+                });
+                text = await readLocalPdfFirstPage(
+                  new Blob([new Uint8Array(bytes)]),
+                );
+              } else {
+                const fileHandle = await localDirectory.getFileHandle(
+                  fileName,
+                  { create: false },
+                );
+                text = await readLocalPdfFirstPage(await fileHandle.getFile());
+              }
+            } else {
+              ({ text } = await readCodeFirstPage(row, controller.signal));
+            }
             const info = parseCodeInfo(text);
-            updateRow(i, {
+            const update = {
               oldLatest: row.latest,
               oldIssue: row.issue,
               oldExpiration: row.expiration,
-              link: sourceUrl,
               ...info,
-              checked: true,
               updated:
                 info.latest !== row.latest ||
                 info.issue !== row.issue ||
                 info.expiration !== row.expiration,
-            });
+            };
+            updateRow(i, update);
             log(`${row.number || "PDF"}: completed.`);
           }
         } catch (error) {
           if (controller.signal.aborted || error.name === "AbortError") return;
-          if (mode !== "check") updateRow(i, { checked: false, exists: false });
+          if (mode === "local" && error.name === "NotFoundError") {
+            log(`${row.number || "PDF"} skipped: local PDF was not found.`);
+            return;
+          }
           log(`${row.number || "PDF"} failed: ${formatOperationError(error)}`);
         }
       },
@@ -943,23 +1031,47 @@ function App() {
     log(
       controller.signal.aborted
         ? "Operation cancelled."
-        : `${mode === "check" ? "Check Link" : "Search"} finished.`,
+        : `${mode === "check" ? "Check Link" : mode === "local" ? "Update Local" : "Search"} finished.`,
     );
     operationControllerRef.current = null;
     setBusy(false);
   };
-  const downloadPdfs = async () => {
-    if (!downloadDirectoryRef.current && window.showDirectoryPicker) {
+  const ensureDownloadDirectory = async (operation) => {
+    if (isTauri) {
+      if (isAbsolutePath(downloadDirectoryRef.current))
+        return downloadDirectoryRef.current;
       try {
-        downloadDirectoryRef.current = await window.showDirectoryPicker({
-          mode: "readwrite",
-        });
+        const directory = await invoke("pick_directory");
+        if (directory) {
+          downloadDirectoryRef.current = directory;
+          return directory;
+        }
       } catch (error) {
-        if (error.name !== "AbortError")
-          log(`Download folder selection failed: ${error.message}`);
-        return;
+        log(`${operation} folder selection failed: ${error}`);
       }
+      return null;
     }
+    if (downloadDirectoryRef.current?.getFileHandle)
+      return downloadDirectoryRef.current;
+    if (!window.showDirectoryPicker) {
+      log(
+        `${operation} unavailable: folder access is not supported by this browser.`,
+      );
+      return null;
+    }
+    try {
+      downloadDirectoryRef.current = await window.showDirectoryPicker({
+        mode: "readwrite",
+      });
+      return downloadDirectoryRef.current;
+    } catch (error) {
+      if (error.name !== "AbortError")
+        log(`${operation} folder selection failed: ${error.message}`);
+      return null;
+    }
+  };
+  const downloadPdfs = async () => {
+    if (!(await ensureDownloadDirectory("Download PDFs"))) return;
     setBusy(true);
     const controller = new AbortController();
     operationControllerRef.current = controller;
@@ -973,34 +1085,32 @@ function App() {
           const { blob } = await readCodeFirstPage(row, controller.signal);
           const fileName = `${row.number || "report"}.pdf`;
           const rootDirectory = downloadDirectoryRef.current;
-          if (rootDirectory?.getFileHandle) {
-            const permission = await rootDirectory.queryPermission({
-              mode: "readwrite",
+          if (isTauri) {
+            await invoke("write_pdf", {
+              root: rootDirectory,
+              tab: current.header,
+              fileName,
+              data: Array.from(new Uint8Array(await blob.arrayBuffer())),
             });
-            if (permission !== "granted")
-              await rootDirectory.requestPermission({ mode: "readwrite" });
-            const directory = await rootDirectory.getDirectoryHandle(
-              safeDirectoryName(current.header),
-              { create: true },
-            );
-            const fileHandle = await directory.getFileHandle(fileName, {
-              create: true,
-            });
-            const writable = await fileHandle.createWritable();
-            await writable.write(blob);
-            await writable.close();
-          } else {
-            const a = document.createElement("a");
-            const objectUrl = URL.createObjectURL(blob);
-            a.href = objectUrl;
-            a.download = fileName;
-            a.target = "_self";
-            a.style.display = "none";
-            document.body.appendChild(a);
-            a.click();
-            a.remove();
-            window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+            updateRow(i, { progress: 100 });
+            log(`${row.number || "PDF"} downloaded.`);
+            return;
           }
+          const permission = await rootDirectory.queryPermission({
+            mode: "readwrite",
+          });
+          if (permission !== "granted")
+            await rootDirectory.requestPermission({ mode: "readwrite" });
+          const directory = await rootDirectory.getDirectoryHandle(
+            safeDirectoryName(current.header),
+            { create: true },
+          );
+          const fileHandle = await directory.getFileHandle(fileName, {
+            create: true,
+          });
+          const writable = await fileHandle.createWritable();
+          await writable.write(blob);
+          await writable.close();
           updateRow(i, { progress: 100 });
           log(`${row.number || "PDF"} downloaded.`);
         } catch (error) {
@@ -1019,26 +1129,37 @@ function App() {
       controller.signal.aborted ? "Download cancelled." : "Download finished.",
     );
   };
+  const openTabFolder = async (tabId) => {
+    const targetTab = tabs.find((tab) => tab.id === tabId) || current;
+    if (!targetTab) return;
+    const rootDirectory = await ensureDownloadDirectory("Open Folder");
+    if (!rootDirectory) return;
+    try {
+      if (isTauri) {
+        await invoke("open_folder", {
+          root: rootDirectory,
+          tab: targetTab.header,
+        });
+        return;
+      }
+      const directory = await rootDirectory.getDirectoryHandle(
+        safeDirectoryName(targetTab.header),
+        { create: false },
+      );
+      if (window.showDirectoryPicker) {
+        await window.showDirectoryPicker({
+          mode: "readwrite",
+          startIn: directory,
+        });
+      }
+    } catch (error) {
+      log(`Open Folder failed: ${formatOperationError(error)}`);
+    }
+  };
   const deletePdfs = async (tabId = selectedId) => {
     const targetTab = tabs.find((tab) => tab.id === tabId) || current;
     if (!targetTab) return;
-    if (!window.showDirectoryPicker && !downloadDirectoryRef.current) {
-      log(
-        "Delete PDFs unavailable: folder access is not supported by this browser.",
-      );
-      return;
-    }
-    if (!downloadDirectoryRef.current) {
-      try {
-        downloadDirectoryRef.current = await window.showDirectoryPicker({
-          mode: "readwrite",
-        });
-      } catch (error) {
-        if (error.name !== "AbortError")
-          log(`Delete PDFs folder selection failed: ${error.message}`);
-        return;
-      }
-    }
+    if (!(await ensureDownloadDirectory("Delete PDFs"))) return;
     if (
       !window.confirm(
         `Delete all PDF files from the '${targetTab.header}' folder? This action cannot be undone.`,
@@ -1048,6 +1169,14 @@ function App() {
     setBusy(true);
     try {
       const rootDirectory = downloadDirectoryRef.current;
+      if (isTauri) {
+        const deleted = await invoke("delete_pdfs", {
+          root: rootDirectory,
+          tab: targetTab.header,
+        });
+        log(`Deleted ${deleted} PDF file(s) from '${targetTab.header}'.`);
+        return;
+      }
       const permission = await rootDirectory.queryPermission({
         mode: "readwrite",
       });
@@ -1126,6 +1255,12 @@ function App() {
       downloadDirectory: nextSettings.downloadDirectory || "Downloads",
     };
     setSettings(normalized);
+    if (isTauri)
+      downloadDirectoryRef.current = isAbsolutePath(
+        normalized.downloadDirectory,
+      )
+        ? normalized.downloadDirectory
+        : null;
     localStorage.setItem("code-report-settings", JSON.stringify(normalized));
   };
   const setDownloadDirectory = (handle) => {
@@ -1185,25 +1320,19 @@ function App() {
   };
   const stopColumnResize = () => setColumnResize(null);
 
-  const tableRows = current.items.length ? (
-    current.items.map((row, index) => (
-      <ReportRow
-        key={`${row.number}-${index}`}
-        row={row}
-        index={index}
-        selected={selectedRows.has(index)}
-        update={(patch) => updateRow(index, patch)}
-        onSelect={(event) => selectRow(index, event)}
-        onContextMenu={(event) => showRowContextMenu(event, index)}
-      />
-    ))
-  ) : (
-    <tr>
-      <td colSpan={9} className="empty-table">
-        No rows yet. Use the plus button below to add a report.
-      </td>
-    </tr>
-  );
+  const tableRows = current.items.length
+    ? current.items.map((row, index) => (
+        <ReportRow
+          key={`${row.number}-${index}`}
+          row={row}
+          index={index}
+          selected={selectedRows.has(index)}
+          update={(patch) => updateRow(index, patch)}
+          onSelect={(event) => selectRow(index, event)}
+          onContextMenu={(event) => showRowContextMenu(event, index)}
+        />
+      ))
+    : null;
 
   const headers = [
     "Code Report No",
@@ -1251,80 +1380,102 @@ function App() {
         </button>
       </div>
       <div className="ribbon-body">
-        <div className="ribbon-group">
-          <div className="ribbon-actions">
-            <Button icon="open" onClick={() => crpInputRef.current?.click()}>
-              Open
-            </Button>
-            <SplitButton
-              icon="save"
-              onClick={saveReport}
-              items={[
-                { label: "Save", action: saveReport },
-                { label: "Save As", icon: "saveAs", action: saveReport },
-              ]}
-            >
-              Save
-            </SplitButton>
-            <Button icon="excel" disabled={busy}>
-              Export
-            </Button>
+        {activeRibbonTab === "Home" ? (
+          <>
+            <div className="ribbon-group">
+              <div className="ribbon-actions">
+                <Button
+                  icon="open"
+                  onClick={() => crpInputRef.current?.click()}
+                >
+                  Open
+                </Button>
+                <SplitButton
+                  icon="save"
+                  onClick={saveReport}
+                  items={[
+                    { label: "Save", action: saveReport },
+                    { label: "Save As", icon: "saveAs", action: saveReport },
+                  ]}
+                >
+                  Save
+                </SplitButton>
+                <Button icon="excel" disabled={busy}>
+                  Export
+                </Button>
+              </div>
+              <small>File</small>
+            </div>
+            <div className="ribbon-group">
+              <div className="ribbon-actions">
+                <Button
+                  icon="checkLink"
+                  onClick={() => runCheck("check")}
+                  disabled={busy}
+                >
+                  Check Link
+                </Button>
+                <SplitButton
+                  icon="refresh"
+                  onClick={() => runCheck("update")}
+                  disabled={busy}
+                  items={[
+                    { label: "Update", action: () => runCheck("update") },
+                    { label: "Update Local", action: () => runCheck("local") },
+                  ]}
+                >
+                  Update
+                </SplitButton>
+                <SplitButton
+                  icon="download"
+                  onClick={downloadPdfs}
+                  disabled={busy}
+                  items={[
+                    { label: "Download PDFs", action: downloadPdfs },
+                    {
+                      label: "Delete PDFs",
+                      icon: "trash",
+                      action: deletePdfs,
+                    },
+                  ]}
+                >
+                  Download
+                </SplitButton>
+                <Button icon="stop" onClick={cancelWork} disabled={!busy}>
+                  Stop
+                </Button>
+              </div>
+              <small>PDF Operations</small>
+            </div>
+            <div className="ribbon-group compact-group">
+              <div className="ribbon-actions">
+                <Button icon="settings" onClick={() => setShowSettings(true)}>
+                  Settings
+                </Button>
+              </div>
+              <small>Settings</small>
+            </div>
+            <div className="ribbon-spacer" />
+          </>
+        ) : (
+          <div className="ribbon-group compact-group">
+            <div className="ribbon-actions">
+              <Button
+                icon="github"
+                onClick={() =>
+                  window.open(
+                    "https://github.com/thang199801666/CodeReportTracker",
+                    "_blank",
+                    "noopener,noreferrer",
+                  )
+                }
+              >
+                GitHub
+              </Button>
+            </div>
+            <small>Help</small>
           </div>
-          <small>File</small>
-        </div>
-        <div className="ribbon-group">
-          <div className="ribbon-actions">
-            <Button
-              icon="checkLink"
-              onClick={() => runCheck("check")}
-              disabled={busy}
-            >
-              Check Link
-            </Button>
-            <SplitButton
-              icon="refresh"
-              onClick={() => runCheck("update")}
-              disabled={busy}
-              items={[
-                { label: "Update", action: () => runCheck("update") },
-                { label: "Update Local", action: () => runCheck("update") },
-              ]}
-            >
-              Update
-            </SplitButton>
-            <SplitButton
-              icon="download"
-              onClick={downloadPdfs}
-              disabled={busy}
-              items={[
-                { label: "Download PDFs", action: downloadPdfs },
-                {
-                  label: "Delete PDFs",
-                  icon: "trash",
-                  action: deletePdfs,
-                },
-              ]}
-            >
-              Download
-            </SplitButton>
-            <Button icon="stop" onClick={cancelWork} disabled={!busy}>
-              Stop
-            </Button>
-          </div>
-          <small>PDF Operations</small>
-        </div>
-        <div className="ribbon-group compact-group">
-          <div className="ribbon-actions">
-            <Button icon="settings" onClick={() => setShowSettings(true)}>
-              Settings
-            </Button>
-          </div>
-          <small>Settings</small>
-        </div>
-        <div className="ribbon-spacer" />
-        <span className="safe-state">
-          <i /> Local workspace
-        </span>
+        )}
       </div>
       <main className="main-area">
         <div className="tabbar">
@@ -1429,7 +1580,7 @@ function App() {
             {busy ? "Running..." : "Ready"} · Drag the bar above to resize
           </span>
         </div>
-        <textarea value={consoleText} readOnly />
+        <textarea ref={consoleRef} value={consoleText} readOnly />
       </section>
       <footer>
         <span>Code Report Tracker</span>
@@ -1469,6 +1620,15 @@ function App() {
                 }}
               >
                 <Icon name="trash" /> Delete PDF
+              </button>
+              <button
+                onClick={() => {
+                  const tabId = contextMenu.tabId;
+                  setContextMenu(null);
+                  openTabFolder(tabId);
+                }}
+              >
+                <Icon name="folder" /> Open Folder
               </button>
             </>
           ) : (
@@ -1510,6 +1670,7 @@ function App() {
 
 function ReportRow({ row, index, selected, update, onSelect, onContextMenu }) {
   const displayValue = (field) => <span>{row[field] || "-"}</span>;
+  const validLink = /^https?:\/\/\S+$/i.test(row.link || "");
   return (
     <tr
       className={selected ? "selected-row" : ""}
@@ -1521,9 +1682,12 @@ function ReportRow({ row, index, selected, update, onSelect, onContextMenu }) {
         title={row.link || "-"}
       >
         <a
-          href={row.link || "#"}
+          href={validLink ? row.link : undefined}
           target="_blank"
           rel="noreferrer"
+          onClick={(event) => {
+            if (!validLink) event.preventDefault();
+          }}
           title={row.link || "-"}
         >
           {displayValue("number")}
@@ -1653,6 +1817,18 @@ function SettingsModal({ settings, onSave, onDirectorySelected, onClose }) {
     onClose();
   };
   const chooseDirectory = async () => {
+    if (isTauri) {
+      try {
+        const path = await invoke("pick_directory");
+        if (path) {
+          onDirectorySelected(path);
+          setOptions((value) => ({ ...value, downloadDirectory: path }));
+        }
+      } catch (error) {
+        window.alert(`Unable to select folder: ${error}`);
+      }
+      return;
+    }
     if (!window.showDirectoryPicker) {
       window.alert("Folder selection is not supported by this browser.");
       return;
@@ -1709,8 +1885,9 @@ function SettingsModal({ settings, onSave, onDirectorySelected, onClose }) {
               </button>
             </div>
             <small className="setting-note">
-              Browsers expose the selected folder name only. Enter an absolute
-              path manually if required.
+              {isTauri
+                ? "Tauri uses the selected folder's full path."
+                : "Browsers expose the selected folder name only. Enter an absolute path manually if required."}
             </small>
           </label>
         </div>

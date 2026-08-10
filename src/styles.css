@@ -11,7 +11,7 @@
 .table-wrap th{position:relative}.column-grip{position:absolute;top:0;right:-3px;width:7px;height:100%;cursor:col-resize;z-index:2}.column-grip:hover,.column-grip:active{background:#2e8def99}
 .selected-row td{background:#cfe5f8!important;color:#173d5c}.selected-row .code-link{background:#b8d9f0!important}.selected-row td input{color:#173d5c}
 .table-wrap td{user-select:none}.table-wrap td a{user-select:none}
-.draft-row td{background:#fbfcfd;border-top:2px solid #7eb4dd}.draft-row input{user-select:text;border:1px dashed #b9cbd8;background:#fff}.draft-row input:focus{border-style:solid;border-color:#2e8def}.draft-hint{color:#6f8ea4;text-align:center;font-size:10px;font-style:italic}
+.draft-row td{position:sticky;bottom:0;z-index:3;background:#fbfcfd;border-top:2px solid #7eb4dd}.draft-row input{user-select:text;border:1px dashed #b9cbd8;background:#fff}.draft-row input:focus{border-style:solid;border-color:#2e8def}.draft-hint{color:#6f8ea4;text-align:center;font-size:10px;font-style:italic}
 .draft-status{display:flex;justify-content:center;gap:7px;font-size:10px;white-space:nowrap}.draft-status label{display:flex;align-items:center;gap:3px;color:#64727c}.draft-status input{width:12px;height:12px;margin:0;padding:0;border:0}
 .table-wrap table{table-layout:fixed}.table-wrap th,.table-wrap td{overflow:hidden}.draft-status{gap:4px;overflow:hidden}
 .table-wrap thead th{position:sticky;top:0;z-index:4;background:#edf0f2;box-shadow:0 1px 0 #c5cdd3}
