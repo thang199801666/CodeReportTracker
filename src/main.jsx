@@ -2094,13 +2094,17 @@ function App() {
             <div className="ribbon-actions">
               <Button
                 icon="github"
-                onClick={() =>
-                  window.open(
+                onClick={() => {
+                  const githubWindow = window.open(
                     "https://github.com/thang199801666/CodeReportTracker",
                     "_blank",
-                    "noopener,noreferrer",
-                  )
-                }
+                    "noopener",
+                  );
+                  if (!githubWindow)
+                    window.location.assign(
+                      "https://github.com/thang199801666/CodeReportTracker",
+                    );
+                }}
               >
                 GitHub
               </Button>
