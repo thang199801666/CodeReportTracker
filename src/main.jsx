@@ -1,13 +1,15 @@
 import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { getDocument, GlobalWorkerOptions } from "pdfjs-dist";
 import * as XLSX from "xlsx-js-style";
 import JSZip from "jszip";
 import { invoke, isTauri as isTauriRuntime } from "@tauri-apps/api/core";
 import workerSrc from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import "./styles.css";
 
-GlobalWorkerOptions.workerSrc = workerSrc;
+const pdfjsPromise = import("pdfjs-dist").then((pdfjs) => {
+  pdfjs.GlobalWorkerOptions.workerSrc = workerSrc;
+  return pdfjs;
+});
 
 const sources = {
   IAPMO: {
@@ -30,6 +32,7 @@ const sources = {
 const defaultColumnWidths = [105, 130, 220, 100, 105, 105, 105, 135, 155];
 const isTauri = isTauriRuntime();
 const isAbsolutePath = (value) => /^(?:[A-Za-z]:[\\/]|\\\\)/.test(value || "");
+const MAX_WORKERS = 8;
 
 function Icon({ name }) {
   const shapes = {
@@ -173,11 +176,28 @@ function parseCodeInfo(text) {
   };
 }
 
+async function fetchWithTimeout(url, options = {}, timeoutMs = 30000) {
+  const controller = new AbortController();
+  const externalSignal = options.signal;
+  const abort = () => controller.abort(externalSignal?.reason);
+  if (externalSignal) {
+    if (externalSignal.aborted) abort();
+    else externalSignal.addEventListener("abort", abort, { once: true });
+  }
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    window.clearTimeout(timer);
+    externalSignal?.removeEventListener("abort", abort);
+  }
+}
+
 async function readFirstPage(url, signal) {
   const requestUrl = /^https?:\/\//i.test(url)
     ? `/api/pdf-download?url=${encodeURIComponent(url)}`
     : url;
-  const response = await fetch(requestUrl, { signal });
+  const response = await fetchWithTimeout(requestUrl, { signal });
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   const contentType =
     response.headers.get("content-type") || "unknown content type";
@@ -186,26 +206,36 @@ async function readFirstPage(url, signal) {
   if (signature !== "%PDF-")
     throw new Error(`Response is not a PDF (${contentType}).`);
   const blob = new Blob([bytes], { type: "application/pdf" });
+  const { getDocument } = await pdfjsPromise;
   const loadingTask = getDocument({ data: bytes });
   loadingTask.onPassword = (callback) => callback("");
   const pdf = await loadingTask.promise;
-  const page = await pdf.getPage(1);
-  const content = await page.getTextContent();
-  return { text: content.items.map((item) => item.str).join(" "), blob };
+  try {
+    const page = await pdf.getPage(1);
+    const content = await page.getTextContent();
+    return { text: content.items.map((item) => item.str).join(" "), blob };
+  } finally {
+    await pdf.destroy();
+  }
 }
 
 async function readLocalPdfFirstPage(file) {
   const bytes = await file.arrayBuffer();
+  const { getDocument } = await pdfjsPromise;
   const loadingTask = getDocument({ data: bytes });
   loadingTask.onPassword = (callback) => callback("");
   const pdf = await loadingTask.promise;
-  const page = await pdf.getPage(1);
-  const content = await page.getTextContent();
-  return content.items.map((item) => item.str).join(" ");
+  try {
+    const page = await pdf.getPage(1);
+    const content = await page.getTextContent();
+    return content.items.map((item) => item.str).join(" ");
+  } finally {
+    await pdf.destroy();
+  }
 }
 
 async function resolveEmbeddedPdf(url, signal) {
-  const response = await fetch(
+  const response = await fetchWithTimeout(
     `/api/pdf-resolve?url=${encodeURIComponent(url)}`,
     { signal },
   );
@@ -215,7 +245,7 @@ async function resolveEmbeddedPdf(url, signal) {
 
 async function headPdf(url, signal) {
   const requestUrl = `/api/pdf-head?url=${encodeURIComponent(url)}`;
-  const response = await fetch(requestUrl, { signal });
+  const response = await fetchWithTimeout(requestUrl, { signal });
   if (!response.ok) return false;
   const contentType = response.headers.get("content-type")?.toLowerCase() || "";
   return (
@@ -1223,9 +1253,32 @@ function App() {
     };
   }, []);
   const log = (text) =>
-    setConsoleText(
-      (value) => `${value}-[${new Date().toLocaleTimeString()}] : ${text}\n`,
-    );
+    setConsoleText((value) => {
+      const lines = `${value}-[${new Date().toLocaleTimeString()}] : ${text}`
+        .split("\n")
+        .filter(Boolean);
+      return `${lines.slice(-500).join("\n")}\n`;
+    });
+  useEffect(() => {
+    const reportError = (message) => log(`Unexpected error: ${message}`);
+    const handleError = (event) => {
+      console.error(
+        "Unhandled application error",
+        event.error || event.message,
+      );
+      reportError(event.error?.message || event.message || "Unknown error");
+    };
+    const handleRejection = (event) => {
+      console.error("Unhandled promise rejection", event.reason);
+      reportError(event.reason?.message || String(event.reason));
+    };
+    window.addEventListener("error", handleError);
+    window.addEventListener("unhandledrejection", handleRejection);
+    return () => {
+      window.removeEventListener("error", handleError);
+      window.removeEventListener("unhandledrejection", handleRejection);
+    };
+  }, []);
   const updateRow = (index, patch) =>
     setTabs((all) =>
       all.map((tab) =>
@@ -1506,7 +1559,7 @@ function App() {
         }
       },
       controller.signal,
-      Math.max(1, Math.min(16, Number(settings.workerCount) || 4)),
+      Math.max(1, Math.min(MAX_WORKERS, Number(settings.workerCount) || 4)),
     );
     log(
       controller.signal.aborted
@@ -1601,7 +1654,7 @@ function App() {
         }
       },
       controller.signal,
-      Math.max(1, Math.min(16, Number(settings.workerCount) || 4)),
+      Math.max(1, Math.min(MAX_WORKERS, Number(settings.workerCount) || 4)),
     );
     operationControllerRef.current = null;
     setBusy(false);
@@ -1876,7 +1929,7 @@ function App() {
     const normalized = {
       workerCount: Math.max(
         1,
-        Math.min(16, Number(nextSettings.workerCount) || 4),
+        Math.min(MAX_WORKERS, Number(nextSettings.workerCount) || 4),
       ),
       downloadDirectory: nextSettings.downloadDirectory || "Downloads",
     };
@@ -2575,7 +2628,7 @@ function SettingsModal({ settings, onSave, onDirectorySelected, onClose }) {
             <input
               type="number"
               min="1"
-              max="16"
+              max={MAX_WORKERS}
               value={options.workerCount}
               onChange={(event) =>
                 setOptions((value) => ({
@@ -2700,4 +2753,31 @@ function SettingsModal({ settings, onSave, onDirectorySelected, onClose }) {
   );
 }
 
-createRoot(document.getElementById("root")).render(<App />);
+class AppErrorBoundary extends React.Component {
+  state = { error: null };
+
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+
+  componentDidCatch(error, info) {
+    console.error("Code Report Tracker crashed while rendering.", error, info);
+  }
+
+  render() {
+    if (!this.state.error) return this.props.children;
+    return (
+      <main className="app-error">
+        <h1>Code Report Tracker could not render this view</h1>
+        <p>{this.state.error.message || "Unexpected application error."}</p>
+        <button onClick={() => window.location.reload()}>Reload App</button>
+      </main>
+    );
+  }
+}
+
+createRoot(document.getElementById("root")).render(
+  <AppErrorBoundary>
+    <App />
+  </AppErrorBoundary>,
+);

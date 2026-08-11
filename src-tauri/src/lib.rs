@@ -14,7 +14,11 @@ fn safe_name(value: &str) -> String {
         .map(|character| if r#"<>:/\\|?*"#.contains(character) { '_' } else { character })
         .collect();
     let trimmed = cleaned.trim();
-    if trimmed.is_empty() { "New Tab".to_string() } else { trimmed.to_string() }
+    if trimmed.is_empty() || trimmed == "." || trimmed == ".." {
+        "New Tab".to_string()
+    } else {
+        trimmed.to_string()
+    }
 }
 
 fn tab_path(root: &str, tab: &str) -> PathBuf {
